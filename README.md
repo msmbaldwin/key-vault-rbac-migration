@@ -1,2 +1,418 @@
-# key-vault-rbac-migration
- PowerShell toolkit to migrate Azure Key Vault access policies to RBAC. Analyzes existing policies, maps to least-privilege roles, and generates ARM/Bicep templates or applies assignments directly.
+# Key Vault RBAC Migration Toolkit
+
+A PowerShell toolkit for migrating Azure Key Vaults from access policy authentication to Azure RBAC authorization, designed for enterprise-scale management of hundreds to thousands of Key Vaults.
+
+## Overview
+
+KvRbacMigrator provides a comprehensive solution for:
+- **Analyzing** Key Vault access policies and mapping them to appropriate RBAC roles
+- **Generating** deployment artifacts (ARM, Bicep, CLI commands)
+- **Applying** RBAC role assignments with safety controls
+- **Switching** Key Vault authentication mode from access policies to RBAC
+
+## Features
+
+**Discovery & Analysis**
+- Scans single vaults, resource groups, or entire subscriptions
+- Uses Azure Resource Graph for efficient large-scale discovery with automatic fallback to ARM APIs
+- Filters out vaults already using RBAC authorization during discovery
+- Supports tag-based filtering for targeted migrations
+- Optimized processing with bulk operations and caching for improved performance at scale
+- Automatically skips non-existent principals (deleted users, groups, or service principals)
+- Comprehensive error handling with detailed failure reporting and recovery
+
+**Intelligent Role Mapping**
+- Maps access policy permissions to least-privilege RBAC roles using sophisticated algorithms
+- Detects existing role assignments to prevent duplicates, including assignments inherited through transitive group membership (nested groups)
+- **Administrator Mode Security**: Assigns the Key Vault Administrator role only when it grants no additional permissions beyond the user's current access, preventing privilege escalation
+- Maps storage permissions to Key Vault Administrator with escalation warnings (storage APIs are deprecated)
+- Supports compound identities for Azure services with predefined configurations
+- Provides detailed warnings for permission gaps and over-provisioning scenarios
+
+**Permission Analysis Mode**
+- Instantly determine the minimal RBAC role for a set of permissions using [`-GetPermissionMapping`](Invoke-KvRbacAnalysis.ps1) mode
+- Ideal for developers and security engineers to quickly validate access requirements
+- No vault discovery required - works with JSON permission definitions
+
+**Comprehensive Reporting**
+- Human-readable CSV reports with detailed assignment status
+- Machine-readable JSON for automation and integration
+- Structured audit logging with compliance tracking and decision rationale
+- Ready-to-execute PowerShell and Azure CLI command generation
+- Performance metrics and optimization recommendations
+
+**Deployment Artifacts**
+- ARM template snippets with proper resource definitions
+- Bicep modules with modern syntax and best practices
+- PowerShell and Azure CLI scripts with error handling
+- Revert scripts for rollback scenarios
+
+**Enterprise Safety & Reliability**
+- Dry-run mode by default with clear execution indicators
+- Per-vault confirmation prompts with batch override options
+- Idempotent operations that safely handle re-execution
+- Comprehensive error handling with detailed failure reporting
+- Extensive test suite with automated CI/CD validation
+- Zero privilege escalation security model
+
+## Prerequisites
+
+- **PowerShell 7.0+** (Windows, Linux, or macOS)
+- **Azure PowerShell modules:**
+  - `Az.KeyVault`
+  - `Az.Resources` 
+  - `Az.Accounts`
+  - `Az.ResourceGraph` (recommended)
+- **Permissions:**
+  - Key Vault Reader (for analysis)
+  - User Access Administrator (for role assignments)
+
+## Quick Start
+
+### 1. Install Prerequisites
+
+```powershell
+# Install required Azure PowerShell modules
+Install-Module Az.KeyVault, Az.Resources, Az.Accounts, Az.ResourceGraph -Force
+
+# Connect to Azure
+Connect-AzAccount
+```
+
+### 2. Analyze Key Vaults
+
+```powershell
+# Analyze all vaults in a resource group (generates reports only)
+.\Invoke-KvRbacAnalysis.ps1 -ResourceGroup "my-keyvaults-rg"
+
+# Analyze specific vaults and generate automation scripts
+.\Invoke-KvRbacAnalysis.ps1 -VaultName "kv-prod-01","kv-prod-02" -GenerateAutomationScripts
+
+# Analyze entire subscription with tag filter
+.\Invoke-KvRbacAnalysis.ps1 -SubscriptionId "12345678-1234-1234-1234-123456789abc" -TagFilter @{ "MigrateToRBAC" = "true" }
+```
+
+### 3. Review Results
+
+The analysis generates reports in a timestamped subdirectory, such as `.\out\analysis-20250703-143022`:
+- `analysis.csv` - Human-readable report for auditing and review
+- `analysis.json` - Machine-readable data for the [`Invoke-KvRbacApply.ps1`](Invoke-KvRbacApply.ps1) step
+
+If you use the `-GenerateAutomationScripts` flag, it creates vault-specific folders containing deployment artifacts:
+- ARM and Bicep templates in `templates/` subfolder
+- PowerShell and Azure CLI scripts in `scripts/` subfolder
+- Revert scripts for rollback scenarios
+
+### 4. Apply Role Assignments
+
+```powershell
+# Preview changes using the -WhatIf parameter
+.\Invoke-KvRbacApply.ps1 -InputJson ".\out\analysis-20250703-143022\analysis.json" -WhatIf
+
+# Apply the changes (prompts for confirmation per vault)
+.\Invoke-KvRbacApply.ps1 -InputJson ".\out\analysis-20250703-143022\analysis.json"
+
+# Apply all without confirmation prompts (use with caution)
+.\Invoke-KvRbacApply.ps1 -InputJson ".\out\analysis-20250703-143022\analysis.json" -Confirm:$false
+```
+
+### 5. Switch Authentication Mode
+
+```powershell
+# Dry run - shows which vaults would be switched
+.\Switch-KeyVaultAuthModeToRBAC.ps1 -ResourceGroup "my-keyvaults-rg"
+
+# Switch with confirmation
+.\Switch-KeyVaultAuthModeToRBAC.ps1 -VaultName "kv-prod-01" -Apply
+
+# Switch all without prompts (use with caution)
+.\Switch-KeyVaultAuthModeToRBAC.ps1 -ResourceGroup "my-keyvaults-rg" -Apply -YesToAll
+```
+
+## Usage Examples
+
+### Large-Scale Migration Workflow
+
+```powershell
+# 1. Analyze all vaults in subscription
+.\Invoke-KvRbacAnalysis.ps1 -SubscriptionId "12345678-1234-1234-1234-123456789abc"
+
+# 2. Review CSV report for human analysis
+Import-Csv ".\out\analysis-20250703-143022\analysis.csv" | Out-GridView
+
+# 3. Apply role assignments
+.\Invoke-KvRbacApply.ps1 -InputJson ".\out\analysis-20250703-143022\analysis.json"
+
+# 4. Switch authentication mode after verifying access
+.\Switch-KeyVaultAuthModeToRBAC.ps1 -SubscriptionId "12345678-1234-1234-1234-123456789abc" -Apply
+```
+
+### CI/CD Integration
+
+```powershell
+# Generate pipeline artifacts for automated deployment
+.\Invoke-KvRbacAnalysis.ps1 -ResourceGroup "prod-keyvaults" -GenerateAutomationScripts
+
+# Deploy using generated templates
+# (Submit out/analysis-*/[vaultname]/templates/* to your build system)
+```
+
+### Filtering and Targeting
+
+```powershell
+# Target vaults by tags
+.\Invoke-KvRbacAnalysis.ps1 -SubscriptionId "sub-id" -TagFilter @{
+    "Environment" = "production"
+    "MigrateToRBAC" = "true"
+}
+
+# Process specific vaults
+.\Invoke-KvRbacAnalysis.ps1 -VaultName "kv-app1-prod","kv-app2-prod"
+```
+
+### Permission Analysis Mode
+
+Use the `-GetPermissionMapping` mode to quickly determine the recommended RBAC role(s) for a given set of permissions without performing a full vault analysis. This is useful for understanding how a specific set of permissions maps to built-in RBAC roles.
+
+```powershell
+# Define permissions in a JSON string
+$jsonPolicy = @'
+{
+    "secrets": ["get", "list"],
+    "keys": ["get"],
+    "certificates": ["get", "list"]
+}
+'@
+
+# Run the analysis
+.\Invoke-KvRbacAnalysis.ps1 -GetPermissionMapping -PolicyAsJson $jsonPolicy
+```
+
+## Role Mapping
+
+The tool maps Key Vault access policy permissions to these built-in RBAC roles:
+
+| Permission Type | Access Policy Permissions | RBAC Role |
+|-----------------|---------------------------|-----------|
+| **Secrets** | get, list | Key Vault Secrets User |
+| | set, delete, backup, restore, recover, purge | Key Vault Secrets Officer |
+| **Keys** | get, list, decrypt, encrypt, unwrapKey, wrapKey, verify, sign | Key Vault Crypto User |
+| | create, update, import, delete, backup, restore, recover, purge | Key Vault Crypto Officer |
+| **Certificates** | get, list, getissuers, listissuers | Key Vault Certificate User |
+| | set, create, update, import, delete, managecontacts, manageissuers, setissuers, deleteissuers | Key Vault Certificates Officer |
+| **Storage** | get, list, set, update, delete, etc. | Key Vault Administrator (with escalation warning) |
+
+When multiple permission types are needed, the tool assigns multiple roles following the principle of least privilege.
+
+## Configuration
+
+### Role Mapping Customization
+
+Edit `RoleMapping.json` to customize the permission-to-role mappings:
+
+```json
+{
+    "secrets": {
+        "get": "Key Vault Secrets User",
+        "set": "Key Vault Secrets Officer"
+    },
+    "keys": {
+        "get": "Key Vault Crypto User",
+        "create": "Key Vault Crypto Officer"
+    }
+}
+```
+
+### Logging
+
+All operations are logged to `.\log\audit.log` with:
+- **Info**: General progress and status
+- **Warning**: Non-fatal issues and recommendations
+- **Error**: Failures and critical issues
+- **Decision**: Rationale for security-sensitive choices
+
+**Log Management**: A single `audit.log` file is used for all sessions, providing a comprehensive, structured audit trail for compliance and troubleshooting. Users can manually clean up or archive the log file as needed.
+
+## Architecture
+
+### CLI Surface
+
+The toolkit consists of three main scripts that work side-by-side:
+
+```powershell
+# Analysis Phase
+.\Invoke-KvRbacAnalysis.ps1 `
+    -SubscriptionId <sub> `
+    -ResourceGroup <rg> `
+    -VaultName <vault1>,<vault2> `
+    -TagFilter @{ 'MigrateToRBAC' = 'true' } `
+    -OutputFolder .\out `
+    [-GenerateAutomationScripts] `
+    [-Verbose]
+
+# Permission Analysis Mode (standalone)
+.\Invoke-KvRbacAnalysis.ps1 -GetPermissionMapping -PolicyAsJson '{"secrets":["get","list"]}'
+
+# Application Phase
+.\Invoke-KvRbacApply.ps1 -InputJson .\out\analysis-YYYYMMDD-HHmmss\analysis.json [-WhatIf]
+
+# Auth Mode Migration Phase
+.\Switch-KeyVaultAuthModeToRBAC.ps1 -VaultName 'kv1','kv2' -Apply [-YesToAll]
+```
+
+### File Structure
+
+```
+/key-vault-rbac-migration
+ ├─ Invoke-KvRbacAnalysis.ps1    # Main analysis engine with optimized processing
+ ├─ Invoke-KvRbacApply.ps1       # Role assignment application with safety controls
+ ├─ Switch-KeyVaultAuthModeToRBAC.ps1  # Authentication mode switching
+ ├─ Common.ps1                    # Consolidated logging, audit, metrics, and utilities
+ ├─ RoleMapping.json              # Comprehensive role mapping configuration
+ ├─ Run-Tests.ps1                 # Test runner with Pester integration
+ ├─ *.Tests.ps1                   # Unit tests for each component
+ ├─ README.md
+ └─ LICENSE
+```
+
+### Performance Optimizations
+
+For large deployments (1000+ vaults), the tool uses several optimizations:
+
+| Area | Optimization | Benefit |
+|------|-------------|---------|
+| **Discovery** | Azure Resource Graph with KQL queries | 10x faster vault enumeration vs ARM API |
+| **Principal Resolution** | Bulk API calls with caching | Reduces API calls from N to N/100 |
+| **Group Membership** | Transitive Graph API with caching | Detects nested group-inherited assignments |
+| **Role Assignment Detection** | Bulk queries with O(1) lookups | Scales linearly with vault count |
+| **Permission Mapping** | Pre-computed lookup tables | Sub-millisecond role selection |
+| **Memory Management** | Streaming and batching | Handles 1000+ vaults in <2GB RAM |
+
+## Troubleshooting
+
+### Common Issues
+
+**"Must specify exactly one of: VaultName, ResourceGroup, or SubscriptionId"**
+- Provide exactly one scope parameter (`-VaultName`, `-ResourceGroup`, or `-SubscriptionId`), not multiple or none.
+
+**"Azure Resource Graph unavailable, falling back to ARM"**
+- Install `Az.ResourceGraph` module or ensure proper permissions
+- Fallback to ARM still works but may be slower for large scopes
+
+```powershell
+# Install Azure Resource Graph module
+Install-Module Az.ResourceGraph -Force
+```
+
+**"Could not resolve group memberships for principal ..."**
+- The tool uses the Microsoft Graph transitive membership API to detect group-inherited role assignments, including nested groups. This warning indicates the Graph API call failed for a specific principal. Ensure the Azure context has `Directory.Read.All` or equivalent permissions.
+
+**Role assignment failures**
+- Ensure you have "User Access Administrator" role on the Key Vault
+- Check that the principal IDs are valid and haven't been deleted
+
+```powershell
+# Test specific vault access
+Get-AzKeyVault -VaultName "your-vault-name" -ResourceGroup "your-rg"
+
+# Check current role assignments
+Get-AzRoleAssignment -Scope "/subscriptions/sub-id/resourceGroups/rg/providers/Microsoft.KeyVault/vaults/vault-name"
+```
+
+### Performance Tuning
+
+For optimal performance:
+- Filter by tags or resource groups to reduce scope
+- Ensure Az.ResourceGraph module is installed for fastest discovery
+- Monitor memory usage on very large deployments (1000+ vaults)
+
+```powershell
+# Monitor memory usage during processing
+Get-Process -Name pwsh | Select-Object -ExpandProperty WorkingSet64
+```
+
+### Validation Commands
+
+```powershell
+# Test prerequisites
+Get-Module Az.KeyVault, Az.Resources, Az.Accounts -ListAvailable
+
+# Validate Azure connection
+Get-AzContext
+
+# Test ARM template syntax
+Test-AzResourceGroupDeployment -ResourceGroup "test-rg" -TemplateFile ".\out\arm-template.json"
+
+# Verify role definitions exist
+Get-AzRoleDefinition -Name "Key Vault Secrets User"
+```
+
+## Testing
+
+Run the comprehensive test suite:
+
+```powershell
+# Run all tests with the test runner
+.\Run-Tests.ps1
+```
+
+### Test Coverage
+
+The test suite provides **comprehensive validation** of the core RoleMapping.json configuration:
+
+- **14 Critical Tests** validating role mappings and security controls
+- **Schema Validation**: Ensures all required sections and roles are defined
+- **Permission Mapping**: Validates all 36 Key Vault permissions are correctly mapped
+- **Security Logic**: Tests administrator mode and privilege escalation prevention
+- **Data Integrity**: Checks for consistency across all configuration sections
+
+### Test Categories
+
+```powershell
+# Run only RoleMapping validation tests
+Invoke-Pester -Path .\RoleMapping.Tests.ps1 -Tag "RoleMapping"
+
+# Run only critical security tests
+Invoke-Pester -Path .\RoleMapping.Tests.ps1 -Tag "Critical"
+
+# Run tests for a specific script
+Invoke-Pester -Path .\Invoke-KvRbacAnalysis.Tests.ps1
+```
+
+### Test Output Example
+
+```
+KvRbacMigrator Test Suite
+Tests Passed: 14, Failed: 0, Skipped: 0
+Duration: 00:00:01.56
+
+All Azure RBAC roles defined and valid
+All Key Vault permissions mapped correctly  
+Administrator mode security controls verified
+Configuration integrity validated
+```
+
+## Contributing
+
+1. Fork the repository
+2. Create a feature branch: `git checkout -b feature/my-feature`
+3. Make your changes and add tests
+4. Run the test suite: `cd tests && .\Run-Tests.ps1`
+5. Commit your changes: `git commit -am 'Add my feature'`
+6. Push to the branch: `git push origin feature/my-feature`
+7. Submit a pull request
+
+## Security
+
+- Scripts run under your existing Azure session - no credentials stored
+- Sensitive data is redacted from logs (except object GUIDs needed for troubleshooting)
+- All operations are audited through Azure Activity Log
+- Report issues through [Microsoft Security Response Center](https://msrc.microsoft.com/)
+
+## License
+
+This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
+
+---
+
+> **Important:** Always test in non-production environments first. Switching to RBAC disables access policy authorization immediately — ensure proper RBAC roles are assigned before switching authentication modes.

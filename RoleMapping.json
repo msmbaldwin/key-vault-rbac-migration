@@ -1,0 +1,313 @@
+{
+    "roleDefinitions": {
+        "Key Vault Reader": {
+            "id": "21090545-7ca7-4776-b22c-e363652d74d2",
+            "name": "Key Vault Reader",
+            "weight": 10
+        },
+        "Key Vault Secrets User": {
+            "id": "4633458b-17de-408a-b874-0445c86b69e6",
+            "name": "Key Vault Secrets User",
+            "weight": 20
+        },
+        "Key Vault Secrets Officer": {
+            "id": "b86a8fe4-44ce-4948-aee5-eccb2c155cd7",
+            "name": "Key Vault Secrets Officer",
+            "weight": 30
+        },
+        "Key Vault Crypto User": {
+            "id": "12338af0-0e69-4776-bea7-57ae8d297424",
+            "name": "Key Vault Crypto User",
+            "weight": 20
+        },
+        "Key Vault Crypto Officer": {
+            "id": "14b46e9e-c2b7-41b4-b07b-48a6ebf60603",
+            "name": "Key Vault Crypto Officer",
+            "weight": 30
+        },
+        "Key Vault Certificate User": {
+            "id": "db79e9a7-68ee-4b58-9aeb-b90e7c24fcba",
+            "name": "Key Vault Certificate User",
+            "weight": 20
+        },
+        "Key Vault Certificates Officer": {
+            "id": "a4417e6f-fecd-4de8-b567-7b0420556985",
+            "name": "Key Vault Certificates Officer",
+            "weight": 30
+        },
+        "Key Vault Administrator": {
+            "id": "00482a5a-887f-4fb3-b363-3b7fe8e74483",
+            "name": "Key Vault Administrator",
+            "weight": 40
+        },
+        "Key Vault Crypto Service Encryption User": {
+            "id": "e147488a-f6f5-4113-8e2d-b22465e65bf6",
+            "name": "Key Vault Crypto Service Encryption User",
+            "weight": 25
+        },
+        "Azure Service Deploy Release Management Key Vault Secrets User": {
+            "id": "260691e6-68c2-47cf-bd4a-97d5fd4dbcd5",
+            "name": "Azure Service Deploy Release Management Key Vault Secrets User",
+            "weight": 25
+        }
+    },
+    "administratorModeMapping": {
+        "description": "Administrator role assigned ONLY if it grants no additional permissions beyond user's current set (exact permission match, no privilege escalation)",
+        "requireAllObjectTypes": true,
+        "requiredObjectTypes": [
+            "secrets",
+            "keys",
+            "certificates"
+        ],
+        "useAdministratorFor": {
+            "exactPermissionMatch": true,
+            "preventPrivilegeEscalation": true,
+            "noAdditionalPermissions": true
+        }
+    },
+    "compoundIdentities": [
+        {
+            "appId": "5b306cba-9c71-49db-96c3-d17ca2379c4d",
+            "name": "Azure Service Deploy",
+            "allowedPermissions": [
+                {
+                    "secrets": [
+                        "get"
+                    ]
+                },
+                {
+                    "certificates": [
+                        "get"
+                    ]
+                }
+            ],
+            "role": "Azure Service Deploy Release Management Key Vault Secrets User",
+            "roleId": "260691e6-68c2-47cf-bd4a-97d5fd4dbcd5",
+            "warning": "This is a compound identity for release management.  Only 'get' on secrets and certificates is allowed for this configuration and other permissions will be ignored."
+        }
+    ],
+    "rolePermissions": {
+        "Key Vault Administrator": {
+            "secrets": [
+                "backup",
+                "delete",
+                "get",
+                "list",
+                "purge",
+                "recover",
+                "restore",
+                "rotate",
+                "set"
+            ],
+            "keys": [
+                "backup",
+                "create",
+                "decrypt",
+                "delete",
+                "encrypt",
+                "get",
+                "getrotationpolicy",
+                "import",
+                "list",
+                "purge",
+                "recover",
+                "release",
+                "restore",
+                "rotate",
+                "setrotationpolicy",
+                "sign",
+                "unwrapKey",
+                "update",
+                "verify",
+                "wrapKey"
+            ],
+            "certificates": [
+                "backup",
+                "create",
+                "delete",
+                "deleteissuers",
+                "get",
+                "getissuers",
+                "import",
+                "list",
+                "listissuers",
+                "managecontacts",
+                "manageissuers",
+                "purge",
+                "recover",
+                "restore",
+                "setissuers",
+                "update"
+            ]
+        },
+        "Key Vault Certificate User": {
+            "certificates": [
+                "get",
+                "getissuers",
+                "list",
+                "listissuers"
+            ]
+        },
+        "Key Vault Certificates Officer": {
+            "certificates": [
+                "backup",
+                "create",
+                "delete",
+                "deleteissuers",
+                "get",
+                "getissuers",
+                "import",
+                "list",
+                "listissuers",
+                "managecontacts",
+                "manageissuers",
+                "purge",
+                "recover",
+                "restore",
+                "setissuers",
+                "update"
+            ]
+        },
+        "Key Vault Crypto Officer": {
+            "keys": [
+                "backup",
+                "create",
+                "delete",
+                "get",
+                "getrotationpolicy",
+                "import",
+                "list",
+                "purge",
+                "recover",
+                "release",
+                "restore",
+                "rotate",
+                "setrotationpolicy",
+                "update"
+            ]
+        },
+        "Key Vault Crypto Service Encryption User": {
+            "keys": [
+                "decrypt",
+                "encrypt",
+                "get"
+            ]
+        },
+        "Key Vault Crypto User": {
+            "keys": [
+                "decrypt",
+                "encrypt",
+                "get",
+                "list",
+                "sign",
+                "unwrapKey",
+                "verify",
+                "wrapKey"
+            ]
+        },
+        "Key Vault Reader": {
+            "secrets": [
+                "list"
+            ],
+            "keys": [
+                "list"
+            ],
+            "certificates": [
+                "list",
+                "listissuers"
+            ]
+        },
+        "Key Vault Secrets Officer": {
+            "secrets": [
+                "backup",
+                "delete",
+                "get",
+                "list",
+                "purge",
+                "recover",
+                "restore",
+                "rotate",
+                "set"
+            ]
+        },
+        "Key Vault Secrets User": {
+            "secrets": [
+                "get",
+                "list"
+            ]
+        }
+    },
+    "secrets": {
+        "all": "Key Vault Secrets Officer",
+        "backup": "Key Vault Secrets Officer",
+        "delete": "Key Vault Secrets Officer",
+        "get": "Key Vault Secrets User",
+        "list": "Key Vault Reader",
+        "purge": "Key Vault Secrets Officer",
+        "recover": "Key Vault Secrets Officer",
+        "restore": "Key Vault Secrets Officer",
+        "set": "Key Vault Secrets Officer",
+        "rotate": "Key Vault Secrets Officer"
+    },
+    "keys": {
+        "all": "Key Vault Crypto Officer",
+        "backup": "Key Vault Crypto Officer",
+        "create": "Key Vault Crypto Officer",
+        "decrypt": "Key Vault Crypto User",
+        "delete": "Key Vault Crypto Officer",
+        "encrypt": "Key Vault Crypto User",
+        "get": "Key Vault Crypto User",
+        "getrotationpolicy": "Key Vault Crypto Officer",
+        "import": "Key Vault Crypto Officer",
+        "list": "Key Vault Reader",
+        "purge": "Key Vault Crypto Officer",
+        "recover": "Key Vault Crypto Officer",
+        "release": "Key Vault Crypto Officer",
+        "restore": "Key Vault Crypto Officer",
+        "rotate": "Key Vault Crypto Officer",
+        "setrotationpolicy": "Key Vault Crypto Officer",
+        "sign": "Key Vault Crypto User",
+        "unwrapKey": "Key Vault Crypto User",
+        "update": "Key Vault Crypto Officer",
+        "verify": "Key Vault Crypto User",
+        "wrapKey": "Key Vault Crypto User"
+    },
+    "certificates": {
+        "all": "Key Vault Certificates Officer",
+        "backup": "Key Vault Certificates Officer",
+        "create": "Key Vault Certificates Officer",
+        "delete": "Key Vault Certificates Officer",
+        "deleteissuers": "Key Vault Certificates Officer",
+        "get": "Key Vault Certificate User",
+        "getissuers": "Key Vault Certificate User",
+        "import": "Key Vault Certificates Officer",
+        "list": "Key Vault Reader",
+        "listissuers": "Key Vault Reader",
+        "managecontacts": "Key Vault Certificates Officer",
+        "manageissuers": "Key Vault Certificates Officer",
+        "purge": "Key Vault Certificates Officer",
+        "recover": "Key Vault Certificates Officer",
+        "restore": "Key Vault Certificates Officer",
+        "setissuers": "Key Vault Certificates Officer",
+        "set": "Key Vault Certificates Officer",
+        "update": "Key Vault Certificates Officer"
+    },
+    "storage": {
+        "_warning": "Managed Storage is deprecated. Mapping to Key Vault Administrator as the only role with broad enough data-plane coverage, but this is a significant privilege escalation.",
+        "all": "Key Vault Administrator",
+        "get": "Key Vault Administrator",
+        "list": "Key Vault Administrator",
+        "delete": "Key Vault Administrator",
+        "set": "Key Vault Administrator",
+        "update": "Key Vault Administrator",
+        "regeneratekey": "Key Vault Administrator",
+        "getsas": "Key Vault Administrator",
+        "listsas": "Key Vault Administrator",
+        "deletesas": "Key Vault Administrator",
+        "setsas": "Key Vault Administrator",
+        "recover": "Key Vault Administrator",
+        "backup": "Key Vault Administrator",
+        "restore": "Key Vault Administrator",
+        "purge": "Key Vault Administrator"
+    }
+}
