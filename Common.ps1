@@ -1,130 +1,860 @@
-#Requires -Modules Pester
+# Common module for KvRbacMigrator
+# Consolidates helper, logging, and audit functions.
 
-Describe "Switch-KeyVaultAuthModeToRBAC.ps1" {
+#region Parameters and Global Variables
 
-    BeforeAll {
-        # Dot-source the necessary scripts
-        . "$PSScriptRoot/../Common.ps1"
-        . "$PSScriptRoot/../Invoke-KvRbacAnalysis.ps1" # Contains Get-UserChoice
-        . "$PSScriptRoot/../Switch-KeyVaultAuthModeToRBAC.ps1"
+param(
+    [string]$AuditLogPath = ".\log\audit.log"
+)
 
-        # Initialize logging to ensure the output directory exists
-        Initialize-AuditLogging
+# Consolidated migration context — single state object for metrics, caches, and lookups
+$script:MigrationContext = @{
+    Metrics = @{
+        StartTime = Get-Date
+        VaultsProcessed = 0
+        VaultsSkipped = 0
+        VaultsFailed = 0
+        PrincipalsAnalyzed = 0
+        RoleAssignmentsGenerated = 0
+        WarningsGenerated = 0
+        ErrorsEncountered = 0
+        PermissionMappingDecisions = @()
+        UnmappedPermissions = @()
     }
+    PrincipalCache = @{}
+    GroupMembershipCache = @{}
+    PermissionRoleLookup = @{}
+}
 
-    Context "Execution Modes" {
-        $mockVault = $null
-        BeforeEach {
-            # Define a fresh mock vault for each test to ensure isolation
-            $mockVault = [pscustomobject]@{
-                VaultName             = "test-vault-1"
-                ResourceGroupName     = "rg-test"
-                Location              = "eastus"
-                EnableRbacAuthorization = $false
-                AccessPolicies        = @("policy1", "policy2")
+function Reset-MigrationContext {
+    [CmdletBinding()]
+    param()
+    $script:AuditLogWarningShown = $false
+    $script:MigrationContext = @{
+        Metrics = @{
+            StartTime = Get-Date
+            VaultsProcessed = 0
+            VaultsSkipped = 0
+            VaultsFailed = 0
+            PrincipalsAnalyzed = 0
+            RoleAssignmentsGenerated = 0
+            WarningsGenerated = 0
+            ErrorsEncountered = 0
+            PermissionMappingDecisions = @()
+            UnmappedPermissions = @()
+        }
+        PrincipalCache = @{}
+        GroupMembershipCache = @{}
+        PermissionRoleLookup = @{}
+    }
+}
+
+function Get-MigrationContext {
+    [CmdletBinding()]
+    param()
+    return $script:MigrationContext
+}
+#endregion
+
+#region Core Auditing and Logging
+
+function Write-AuditLog {
+    <#
+    .SYNOPSIS
+    Writes structured audit log entries for compliance and troubleshooting.
+    Also writes colored output to the console.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [ValidateSet("Info", "Warning", "Error", "Decision", "Metric")]
+        [string]$Level,
+        
+        [Parameter(Mandatory)]
+        [string]$Message,
+        
+        [hashtable]$Details = @{},
+        
+        [string]$Category = "General",
+        
+        [string]$VaultName = $null,
+        
+        [string]$PrincipalId = $null,
+
+        [switch]$NoConsole
+    )
+    
+    try {
+        # Ensure the log file exists before writing
+        if (-not (Test-Path $AuditLogPath)) {
+            $logDir = Split-Path -Parent $AuditLogPath
+            if (-not (Test-Path $logDir)) {
+                New-Item -ItemType Directory -Path $logDir -Force | Out-Null
             }
+            # Create an empty file
+            New-Item -Path $AuditLogPath -ItemType File -Force | Out-Null
         }
 
-        It "Should run in DRY RUN mode and not apply changes" {
-            # Mock the necessary cmdlets to simulate a dry run
-            Mock Get-KeyVaultsForAuthSwitch { return @($mockVault) } -Verifiable
-            Mock Test-VaultAuthMode {
-                return @{
-                    VaultName           = "test-vault-1"
-                    ResourceGroup       = "rg-test"
-                    Location            = "eastus"
-                    CurrentAuthMode     = "Access Policy"
-                    IsRbacEnabled       = $false
-                    AccessPolicyCount   = 2
-                }
-            } -Verifiable
-            # CRITICAL: Ensure the cmdlet that makes changes is NOT called
-            Mock Update-AzKeyVault { throw "Update-AzKeyVault should not be called in dry run mode" } -Verifiable
-
-            # Set parameters and call the function
-            $VaultName = "test-vault-1"
-            $Apply = $false
-            Switch-KeyVaultAuthModeToRBAC
-
-            # Verify that the change-making cmdlet was not invoked
-            Should -Not -Invoke -Command 'Update-AzKeyVault'
+        $auditEntry = @{
+            Timestamp = (Get-Date).ToString("yyyy-MM-dd HH:mm:ss.fff")
+            Level = $Level
+            Category = $Category
+            Message = $Message
+            VaultName = $VaultName
+            PrincipalId = $PrincipalId
+            Details = $Details
+            ProcessId = $PID
+            User = $env:USERNAME
+            ComputerName = $env:COMPUTERNAME
         }
-
-        It "Should run in APPLY mode and call Update-AzKeyVault when approved" {
-            # Mock the necessary cmdlets to simulate an apply run
-            Mock Get-KeyVaultsForAuthSwitch { return @($mockVault) } -Verifiable
-            Mock Test-VaultAuthMode {
-                return @{
-                    VaultName           = "test-vault-1"
-                    ResourceGroup       = "rg-test"
-                    Location            = "eastus"
-                    CurrentAuthMode     = "Access Policy"
-                    IsRbacEnabled       = $false
-                    AccessPolicyCount   = 2
-                }
-            } -Verifiable
-            # Mock user approving the change
-            Mock Get-UserChoice { return 'Yes' } -Verifiable
-            # Mock the update cmdlet to verify it's called
-            Mock Update-AzKeyVault { } -Verifiable
-            # Mock Get-AzKeyVault for verification after the update
-            Mock Get-AzKeyVault {
-                # Simulate the vault being updated
-                $mockVault.EnableRbacAuthorization = $true
-                return $mockVault
-            } -Verifiable
-
-            # Set parameters and call the function
-            $VaultName = "test-vault-1"
-            $Apply = $true
-            Switch-KeyVaultAuthModeToRBAC
-
-            # Verify that the change-making cmdlet was invoked with the correct parameters
-            Should -Invoke -Command 'Update-AzKeyVault' -Exactly 1 -ParameterFilter {
-                $VaultName -eq 'test-vault-1' -and
-                $ResourceGroupName -eq 'rg-test' -and
-                $EnableRbacAuthorization -eq $true
+        
+        $auditJson = $auditEntry | ConvertTo-Json -Compress -Depth 10
+        Add-Content -Path $AuditLogPath -Value $auditJson
+        
+        # Write to console with colors (unless suppressed)
+        if (-not $NoConsole) {
+            switch ($Level) {
+                "Info" { Write-Host $Message -ForegroundColor White }
+                "Warning" { Write-Host "WARNING: $Message" -ForegroundColor Yellow }
+                "Error" { Write-Host "ERROR: $Message" -ForegroundColor Red }
+                default { Write-Verbose "AUDIT: [$Level] $Message" }
             }
         }
-
-        It "Should SKIP vaults that are already in RBAC mode" {
-            # Mock a vault that is already configured for RBAC
-            $rbacVault = [pscustomobject]@{
-                VaultName             = "rbac-vault"
-                ResourceGroupName     = "rg-test"
-                Location              = "eastus"
-                EnableRbacAuthorization = $true
-                AccessPolicies        = @()
-            }
-
-            Mock Get-KeyVaultsForAuthSwitch { return @($rbacVault) }
-            Mock Test-VaultAuthMode {
-                return @{
-                    VaultName           = "rbac-vault"
-                    ResourceGroup       = "rg-test"
-                    Location            = "eastus"
-                    CurrentAuthMode     = "RBAC"
-                    IsRbacEnabled       = $true
-                    AccessPolicyCount   = 0
-                }
-            }
-            Mock Update-AzKeyVault { throw "Update-AzKeyVault should not be called for an RBAC-enabled vault" }
-
-            # Set parameters and call the function
-            $VaultName = "rbac-vault"
-            $Apply = $true
-            Switch-KeyVaultAuthModeToRBAC
-
-            # Verify that no attempt was made to switch the vault
-            Should -Not -Invoke -Command 'Update-AzKeyVault'
+    }
+    catch {
+        if (-not $script:AuditLogWarningShown) {
+            Write-Warning "Failed to write audit log: $($_.Exception.Message). Subsequent audit log failures will be suppressed."
+            $script:AuditLogWarningShown = $true
         }
     }
 }
+
+function Initialize-AuditLogging {
+    <#
+    .SYNOPSIS
+    Initializes audit logging for the migration session.
+    #>
+    [CmdletBinding()]
+    param()
+    
+    $script:AuditLogWarningShown = $false
+
+    try {
+        # Ensure audit log directory exists
+        $auditDir = Split-Path -Parent $AuditLogPath
+        if (-not (Test-Path $auditDir)) {
+            New-Item -ItemType Directory -Path $auditDir -Force | Out-Null
+        }
+        
+        # Write session start
+        Write-AuditLog -Level "Info" -Message "Audit logging session started" -Details @{
+            AuditLogPath = $AuditLogPath
+            EnableMetrics = $true
+            PowerShellVersion = $PSVersionTable.PSVersion.ToString()
+            User = $env:USERNAME
+            ComputerName = $env:COMPUTERNAME
+        } -Category "Session" -NoConsole
+        
+        Write-Verbose "Audit logging initialized: $AuditLogPath"
+        return $true
+    }
+    catch {
+        Write-Warning "Failed to initialize audit logging: $($_.Exception.Message)"
+        return $false
+    }
+}
+
+#endregion
+
+#region Simple Logging Wrappers
+
+function Write-LogInfo {
+    <#
+    .SYNOPSIS
+    Writes an info-level log message.
+    #>
+    [CmdletBinding()]
+    param([string]$Message, [switch]$NoConsole)
+    Write-AuditLog -Level "Info" -Message $Message -NoConsole:$NoConsole
+}
+
+function Write-LogWarning {
+    <#
+    .SYNOPSIS
+    Writes a warning-level log message.
+    #>
+    [CmdletBinding()]
+    param([string]$Message, [switch]$NoConsole)
+    Write-AuditLog -Level "Warning" -Message $Message -NoConsole:$NoConsole
+}
+
+function Write-LogError {
+    <#
+    .SYNOPSIS
+    Writes an error-level log message.
+    #>
+    [CmdletBinding()]
+    param([string]$Message, [switch]$NoConsole)
+    Write-AuditLog -Level "Error" -Message $Message -NoConsole:$NoConsole
+}
+
+function Get-LogFilePath {
+    <#
+    .SYNOPSIS
+    Returns the current audit log file path.
+    #>
+    return $AuditLogPath
+}
+
+#endregion
+
+#region Metrics and Reporting
+
+function Write-PermissionMappingDecision {
+    <#
+    .SYNOPSIS
+    Records detailed information about permission-to-role mapping decisions for audit purposes.
+    #>
+    [CmdletBinding()]
+    param(
+        [string]$VaultName,
+        [string]$PrincipalId,
+        [string]$PermissionType,
+        [string[]]$InputPermissions,
+        [string]$MappedRole,
+        [string]$DecisionReason,
+        [string[]]$UnmappedPermissions = @(),
+        [hashtable]$RoleWeights = @{}
+    )
+    
+    $decision = @{
+        VaultName = $VaultName
+        PrincipalId = $PrincipalId
+        PermissionType = $PermissionType
+        InputPermissions = $InputPermissions
+        MappedRole = $MappedRole
+        DecisionReason = $DecisionReason
+        UnmappedPermissions = $UnmappedPermissions
+        RoleWeights = $RoleWeights
+        Timestamp = Get-Date
+    }
+    
+    [void]($script:MigrationContext.Metrics.PermissionMappingDecisions += $decision)
+    
+    Write-AuditLog -Level "Decision" -Message "Permission mapping decision made" -Details $decision -Category "PermissionMapping" -VaultName $VaultName -PrincipalId $PrincipalId
+    
+    if ($UnmappedPermissions.Count -gt 0) {
+        foreach ($unmapped in $UnmappedPermissions) {
+            $unmappedEntry = @{
+                Permission = $unmapped
+                PermissionType = $PermissionType
+                VaultName = $VaultName
+                PrincipalId = $PrincipalId
+                Timestamp = Get-Date
+            }
+            [void]($script:MigrationContext.Metrics.UnmappedPermissions += $unmappedEntry)
+        }
+    }
+}
+
+function Update-MigrationMetrics {
+    <#
+    .SYNOPSIS
+    Updates migration metrics for monitoring and reporting.
+    #>
+    [CmdletBinding()]
+    param(
+        [ValidateSet("VaultProcessed", "VaultSkipped", "VaultFailed", "PrincipalAnalyzed", "RoleAssignmentGenerated", "WarningGenerated", "ErrorEncountered")]
+        [string]$MetricType,
+        [int]$Count = 1,
+        [hashtable]$AdditionalData = @{}
+    )
+    
+    switch ($MetricType) {
+        "VaultProcessed" { $script:MigrationContext.Metrics.VaultsProcessed += $Count }
+        "VaultSkipped" { $script:MigrationContext.Metrics.VaultsSkipped += $Count }
+        "VaultFailed" { $script:MigrationContext.Metrics.VaultsFailed += $Count }
+        "PrincipalAnalyzed" { $script:MigrationContext.Metrics.PrincipalsAnalyzed += $Count }
+        "RoleAssignmentGenerated" { $script:MigrationContext.Metrics.RoleAssignmentsGenerated += $Count }
+        "WarningGenerated" { $script:MigrationContext.Metrics.WarningsGenerated += $Count }
+        "ErrorEncountered" { $script:MigrationContext.Metrics.ErrorsEncountered += $Count }
+    }
+    
+    Write-AuditLog -Level "Metric" -Message "$MetricType updated" -Details @{
+        MetricType = $MetricType
+        Count = $Count
+        CurrentValue = $script:MigrationContext.Metrics.$MetricType
+        AdditionalData = $AdditionalData
+    } -Category "Metrics"
+}
+
+function Get-MigrationReport {
+    <#
+    .SYNOPSIS
+    Generates a comprehensive migration report including metrics and recommendations.
+    #>
+    [CmdletBinding()]
+    param(
+        [string]$OutputPath = ".\out\migration-report.json"
+    )
+    
+    $endTime = Get-Date
+    $duration = $endTime - $script:MigrationContext.Metrics.StartTime
+    
+    $report = @{
+        Summary = @{
+            StartTime = $script:MigrationContext.Metrics.StartTime
+            EndTime = $endTime
+            Duration = $duration.ToString()
+            TotalVaultsDiscovered = $script:MigrationContext.Metrics.VaultsProcessed + $script:MigrationContext.Metrics.VaultsSkipped + $script:MigrationContext.Metrics.VaultsFailed
+            VaultsProcessed = $script:MigrationContext.Metrics.VaultsProcessed
+            VaultsSkipped = $script:MigrationContext.Metrics.VaultsSkipped
+            VaultsFailed = $script:MigrationContext.Metrics.VaultsFailed
+            PrincipalsAnalyzed = $script:MigrationContext.Metrics.PrincipalsAnalyzed
+            RoleAssignmentsGenerated = $script:MigrationContext.Metrics.RoleAssignmentsGenerated
+            WarningsGenerated = $script:MigrationContext.Metrics.WarningsGenerated
+            ErrorsEncountered = $script:MigrationContext.Metrics.ErrorsEncountered
+        }
+        PermissionMappingAnalysis = @{
+            TotalDecisions = $script:MigrationContext.Metrics.PermissionMappingDecisions.Count
+            UnmappedPermissionsCount = $script:MigrationContext.Metrics.UnmappedPermissions.Count
+            UnmappedPermissionsSummary = ($script:MigrationContext.Metrics.UnmappedPermissions | Group-Object Permission | ForEach-Object { 
+                @{ Permission = $_.Name; Count = $_.Count; PermissionType = $_.Group[0].PermissionType }
+            })
+            RoleDistribution = ($script:MigrationContext.Metrics.PermissionMappingDecisions | Group-Object MappedRole | ForEach-Object {
+                @{ Role = $_.Name; Count = $_.Count }
+            })
+        }
+        Recommendations = @()
+        QualityMetrics = @{
+            SuccessRate = if (($script:MigrationContext.Metrics.VaultsProcessed + $script:MigrationContext.Metrics.VaultsFailed) -gt 0) {
+                [math]::Round(($script:MigrationContext.Metrics.VaultsProcessed / ($script:MigrationContext.Metrics.VaultsProcessed + $script:MigrationContext.Metrics.VaultsFailed)) * 100, 2)
+            } else { 100 }
+            AverageProblemsPerVault = if ($script:MigrationContext.Metrics.VaultsProcessed -gt 0) {
+                [math]::Round(($script:MigrationContext.Metrics.WarningsGenerated + $script:MigrationContext.Metrics.ErrorsEncountered) / $script:MigrationContext.Metrics.VaultsProcessed, 2)
+            } else { 0 }
+        }
+    }
+    
+    if ($script:MigrationContext.Metrics.UnmappedPermissions.Count -gt 0) {
+        $report.Recommendations += "Review unmapped permissions - $($script:MigrationContext.Metrics.UnmappedPermissions.Count) permissions could not be mapped to RBAC roles"
+    }
+    if ($script:MigrationContext.Metrics.VaultsFailed -gt 0) {
+        $report.Recommendations += "Investigate failed vaults - $($script:MigrationContext.Metrics.VaultsFailed) vaults failed processing"
+    }
+    if ($report.QualityMetrics.AverageProblemsPerVault -gt 2) {
+        $report.Recommendations += "High problem rate detected - average of $($report.QualityMetrics.AverageProblemsPerVault) issues per vault may indicate systematic problems"
+    }
+    
+    $report | ConvertTo-Json -Depth 10 | Out-File -FilePath $OutputPath
+    
+    Write-AuditLog -Level "Info" -Message "Migration report generated" -Details @{ 
+        OutputPath = $OutputPath
+        VaultsProcessed = $report.Summary.VaultsProcessed
+        SuccessRate = $report.QualityMetrics.SuccessRate
+    } -Category "Reporting"
+    
+    return $report
+}
+
+#endregion
+
+#region Security and Helpers
+
+function Initialize-PermissionLookupCache {
+    <#
+    .SYNOPSIS
+    Pre-computes permission-to-role lookup tables for performance optimization
+    
+    .DESCRIPTION
+    Builds hashtable lookups from the role mapping configuration to enable O(1)
+    permission-to-role mapping during analysis with optimized cache access.
+    
+    .PARAMETER RoleMapping
+    The role mapping hashtable containing permission mappings
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [hashtable]$RoleMapping
+    )
+    
+    Write-Verbose "Initializing permission lookup cache"
+    $stopwatch = [System.Diagnostics.Stopwatch]::StartNew()
+    
+    $script:MigrationContext.PermissionRoleLookup = @{
+        secrets = @{}
+        keys = @{}
+        certificates = @{}
+    }
+    
+    $totalPermissions = 0
+    
+    foreach ($objectType in @('secrets', 'keys', 'certificates')) {
+        if ($RoleMapping[$objectType]) {
+            foreach ($permission in $RoleMapping[$objectType].Keys) {
+                $role = $RoleMapping[$objectType][$permission]
+                $script:MigrationContext.PermissionRoleLookup[$objectType][$permission] = $role
+                $totalPermissions++
+            }
+            Write-Verbose "Cached $($RoleMapping[$objectType].Keys.Count) $objectType permission mappings"
+        }
+    }
+    
+    $stopwatch.Stop()
+    Write-Verbose "Permission lookup cache initialized: $totalPermissions mappings in $($stopwatch.ElapsedMilliseconds)ms"
+    
+    Write-AuditLog -Level "Info" -Message "Permission lookup cache initialized" -Details @{
+        SecretsPermissions = $script:MigrationContext.PermissionRoleLookup.secrets.Keys.Count
+        KeysPermissions = $script:MigrationContext.PermissionRoleLookup.keys.Keys.Count
+        CertificatesPermissions = $script:MigrationContext.PermissionRoleLookup.certificates.Keys.Count
+        TotalPermissions = $totalPermissions
+        ElapsedMs = $stopwatch.ElapsedMilliseconds
+    } -Category "Performance" -NoConsole
+}
+
+function Initialize-BulkPrincipalCache {
+    <#
+    .SYNOPSIS
+    Bulk resolves principals and pre-populates the principal cache for performance optimization
+    
+    .DESCRIPTION
+    Performs bulk queries for service principals and users in chunks to minimize API calls.
+    Pre-populates the $script:MigrationContext.PrincipalCache to enable O(1) lookups during analysis.
+    
+    .PARAMETER PrincipalIds
+    Array of principal object IDs to resolve
+    
+    .PARAMETER ChunkSize
+    Number of principals to query per API call (default: 100)
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [string[]]$PrincipalIds,
+        [int]$ChunkSize = 100
+    )
+    
+    if (-not $PrincipalIds -or $PrincipalIds.Count -eq 0) {
+        Write-Verbose "No principal IDs provided for bulk resolution"
+        return
+    }
+    
+    # Filter out null, empty, or whitespace-only principal IDs
+    $uniquePrincipalIds = $PrincipalIds | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | Sort-Object -Unique
+    
+    if ($uniquePrincipalIds.Count -eq 0) {
+        Write-Warning "All provided principal IDs were null, empty, or whitespace. This may indicate issues with access policy ObjectId values."
+        Write-AuditLog -Level "Warning" -Message "Bulk principal resolution skipped - all principal IDs were empty" -Details @{
+            OriginalCount = $PrincipalIds.Count
+            FilteredCount = 0
+        } -Category "PrincipalResolution"
+        return
+    }
+    Write-Verbose "Starting bulk principal resolution for $($uniquePrincipalIds.Count) unique principals"
+    $stopwatch = [System.Diagnostics.Stopwatch]::StartNew()
+    
+    # Track API calls and cache hits
+    $apiCallCount = 0
+    $cacheHits = 0
+    $newlyCached = 0
+    
+    for ($i = 0; $i -lt $uniquePrincipalIds.Count; $i += $ChunkSize) {
+        $endIndex = [Math]::Min($i + $ChunkSize - 1, $uniquePrincipalIds.Count - 1)
+        $chunk = $uniquePrincipalIds[$i..$endIndex]
+        
+        # Filter out already cached principals
+        $uncachedChunk = $chunk | Where-Object { -not $script:MigrationContext.PrincipalCache.ContainsKey($_) }
+        $cacheHits += ($chunk.Count - $uncachedChunk.Count)
+        
+        if ($uncachedChunk.Count -eq 0) {
+            Write-Verbose "Chunk $([Math]::Floor($i/$ChunkSize) + 1): All $($chunk.Count) principals already cached"
+            continue
+        }
+        
+        Write-Verbose "Processing chunk $([Math]::Floor($i/$ChunkSize) + 1): $($uncachedChunk.Count) uncached principals"
+        
+        # Resolve each uncached principal individually (-ObjectId accepts a single string, not arrays)
+        if ($uncachedChunk.Count -gt 0) {
+            Write-Verbose "Resolving $($uncachedChunk.Count) uncached principals individually..."
+            foreach ($principalId in $uncachedChunk) {
+                if ($script:MigrationContext.PrincipalCache.ContainsKey($principalId)) { continue }
+
+                # Try ServicePrincipal
+                $bulkResolveFailed = $false
+                try {
+                    $sp = Get-AzADServicePrincipal -ObjectId $principalId -ErrorAction Stop
+                    $apiCallCount++
+                    if ($sp) {
+                        $script:MigrationContext.PrincipalCache[$sp.Id] = [PSCustomObject]@{
+                            PrincipalId       = $sp.Id
+                            DisplayName       = $sp.DisplayName
+                            PrincipalType     = "ServicePrincipal"
+                            AppId             = $sp.AppId
+                            UserPrincipalName = $null
+                        }
+                        $newlyCached++
+                        continue
+                    }
+                } catch {
+                    Write-Verbose "SP lookup failed for $principalId : $($_.Exception.Message)"
+                    $bulkResolveFailed = $true
+                }
+
+                # Try User
+                try {
+                    $user = Get-AzADUser -ObjectId $principalId -ErrorAction Stop
+                    $apiCallCount++
+                    if ($user) {
+                        $script:MigrationContext.PrincipalCache[$user.Id] = [PSCustomObject]@{
+                            PrincipalId       = $user.Id
+                            DisplayName       = $user.DisplayName
+                            PrincipalType     = "User"
+                            AppId             = $null
+                            UserPrincipalName = $user.UserPrincipalName
+                        }
+                        $newlyCached++
+                        continue
+                    }
+                } catch {
+                    Write-Verbose "User lookup failed for $principalId : $($_.Exception.Message)"
+                    $bulkResolveFailed = $true
+                }
+
+                # Try Group
+                try {
+                    $group = Get-AzADGroup -ObjectId $principalId -ErrorAction Stop
+                    $apiCallCount++
+                    if ($group) {
+                        $script:MigrationContext.PrincipalCache[$group.Id] = [PSCustomObject]@{
+                            PrincipalId       = $group.Id
+                            DisplayName       = $group.DisplayName
+                            PrincipalType     = "Group"
+                            AppId             = $null
+                            UserPrincipalName = $null
+                        }
+                        $newlyCached++
+                        continue
+                    }
+                } catch {
+                    Write-Verbose "Group lookup failed for $principalId : $($_.Exception.Message)"
+                    $bulkResolveFailed = $true
+                }
+
+                Write-Verbose "Could not resolve principal $principalId via bulk cache - will retry individually if needed"
+            }
+        }
+        
+        # DON'T cache unknown principals here - let individual lookups handle them with better error reporting
+        $stillUnknown = $uncachedChunk | Where-Object { -not $script:MigrationContext.PrincipalCache.ContainsKey($_) }
+        if ($stillUnknown.Count -gt 0) {
+            Write-Verbose "Did not resolve $($stillUnknown.Count) principals via bulk query - will retry individually if needed"
+            Write-Verbose "Unresolved principal IDs: $($stillUnknown -join ', ')"
+        }
+    }
+    
+    $stopwatch.Stop()
+
+    # Warn if all lookups failed — likely an auth or connectivity issue
+    $totalAttempted = $uniquePrincipalIds.Count - $cacheHits
+    if ($totalAttempted -gt 0 -and $newlyCached -eq 0) {
+        Write-Warning "Could not resolve any of the $totalAttempted uncached principals. Principal names will show as 'Unknown'. Check Azure AD permissions (Directory.Read.All) and connectivity."
+    }
+
+    Write-Verbose "Bulk principal resolution completed: $newlyCached newly cached, $cacheHits cache hits, $apiCallCount API calls in $($stopwatch.ElapsedMilliseconds)ms"
+    
+    Write-AuditLog -Level "Info" -Message "Bulk principal resolution completed" -Details @{
+        TotalPrincipals = $uniquePrincipalIds.Count
+        NewlyCached = $newlyCached
+        CacheHits = $cacheHits
+        ApiCalls = $apiCallCount
+        ElapsedMs = $stopwatch.ElapsedMilliseconds
+        CacheSizeAfter = $script:MigrationContext.PrincipalCache.Count
+    } -Category "Performance" -NoConsole
+}
+
+function Initialize-GroupMembershipCache {
+    <#
+    .SYNOPSIS
+    Builds a user-to-groups mapping so that group-inherited role assignments can be detected.
+
+    .DESCRIPTION
+    For each principal of type User or ServicePrincipal in the PrincipalCache,
+    queries Microsoft Graph for **transitive** group memberships (including nested groups)
+    and stores them in MigrationContext.GroupMembershipCache as principalId -> @(groupId1, groupId2, ...).
+    Uses Invoke-AzRestMethod against the Graph API to avoid requiring the Microsoft.Graph module.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [string[]]$PrincipalIds
+    )
+
+    $uniqueIds = @($PrincipalIds | Sort-Object -Unique | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+    if ($uniqueIds.Count -eq 0) { return }
+
+    Write-Verbose "Starting transitive group membership resolution for $($uniqueIds.Count) unique principals"
+    $stopwatch = [System.Diagnostics.Stopwatch]::StartNew()
+    $apiCallCount = 0
+    $resolved = 0
+    $failed = 0
+    $graphPermissionWarned = $false
+
+    foreach ($principalId in $uniqueIds) {
+        # Skip if already cached
+        if ($script:MigrationContext.GroupMembershipCache.ContainsKey($principalId)) { continue }
+
+        # Only look up group memberships for Users and ServicePrincipals
+        $cached = $script:MigrationContext.PrincipalCache[$principalId]
+        if (-not $cached -or $cached.PrincipalType -eq "Group" -or $cached.PrincipalType -eq "Unknown") {
+            continue
+        }
+
+        try {
+            # Use Graph transitive memberOf endpoint to resolve nested groups
+            $graphUri = "https://graph.microsoft.com/v1.0/directoryObjects/$principalId/transitiveMemberOf/microsoft.graph.group?`$select=id"
+            $groupIds = @()
+            $nextLink = $null
+
+            do {
+                $requestUri = if ($nextLink) { $nextLink } else { $graphUri }
+                $response = Invoke-AzRestMethod -Uri $requestUri -Method GET -ErrorAction Stop
+                $apiCallCount++
+
+                if ($response.StatusCode -eq 429) {
+                    Write-Warning "Graph API throttled (429) while resolving group memberships for principal $principalId. Group-inherited role assignments may be missed."
+                    $failed++
+                    break
+                }
+                if ($response.StatusCode -eq 403 -and -not $graphPermissionWarned) {
+                    Write-Warning "Graph API returned 403 Forbidden. Ensure the identity has Directory.Read.All permission. Group-inherited role assignments will not be detected."
+                    $graphPermissionWarned = $true
+                    $failed++
+                    break
+                }
+                if ($response.StatusCode -ne 200) {
+                    Write-Warning "Graph API returned status $($response.StatusCode) for principal $principalId. Group membership lookup skipped."
+                    $failed++
+                    break
+                }
+
+                $body = $response.Content | ConvertFrom-Json
+                $groupIds += @($body.value | ForEach-Object { $_.id })
+                $nextLink = $body.'@odata.nextLink'
+            } while ($nextLink)
+
+            $script:MigrationContext.GroupMembershipCache[$principalId] = $groupIds
+            $resolved++
+            if ($groupIds.Count -gt 0) {
+                Write-Verbose "Principal $principalId is a transitive member of $($groupIds.Count) group(s)"
+            }
+        }
+        catch {
+            Write-Warning "Could not resolve group memberships for principal $principalId : $($_.Exception.Message)"
+            $script:MigrationContext.GroupMembershipCache[$principalId] = @()
+            $failed++
+        }
+    }
+
+    $stopwatch.Stop()
+
+    if ($failed -gt 0) {
+        Write-Warning "Group membership resolution: $failed of $($uniqueIds.Count) principal(s) failed. Group-inherited role assignments may be missed for these principals."
+    }
+
+    Write-Verbose "Transitive group membership resolution completed: $resolved resolved, $failed failed, $apiCallCount API calls in $($stopwatch.ElapsedMilliseconds)ms"
+
+    Write-AuditLog -Level "Info" -Message "Transitive group membership resolution completed" -Details @{
+        TotalPrincipals = $uniqueIds.Count
+        Resolved        = $resolved
+        Failed          = $failed
+        ApiCalls        = $apiCallCount
+        ElapsedMs       = $stopwatch.ElapsedMilliseconds
+    } -Category "Performance" -NoConsole
+}
+
+function Get-ResolvedPrincipal {
+    <#
+    .SYNOPSIS
+    Resolves a principal object from cache or Entra ID, with caching.
+    #>
+    [CmdletBinding()]
+    param(
+        [string]$PrincipalId
+    )
+
+    if ([string]::IsNullOrEmpty($PrincipalId)) {
+        return $null
+    }
+
+    # Check cache first
+    if ($script:MigrationContext.PrincipalCache.ContainsKey($PrincipalId)) {
+        Write-Verbose "Principal $PrincipalId found in cache."
+        return $script:MigrationContext.PrincipalCache[$PrincipalId]
+    }
+
+    Write-Verbose "Principal $PrincipalId not in cache. Querying Entra ID."
+    $principalObject = $null
+    
+    # Try to get as a service principal first
+    try {
+        Write-Verbose "Attempting to resolve '$PrincipalId' as service principal..."
+        $sp = Get-AzADServicePrincipal -ObjectId $PrincipalId -ErrorAction Stop
+        if ($sp) {
+            Write-Verbose "Successfully resolved service principal: $($sp.DisplayName)"
+            $principalObject = [PSCustomObject]@{
+                PrincipalId = $sp.Id
+                DisplayName = $sp.DisplayName
+                PrincipalType = "ServicePrincipal"
+                AppId = $sp.AppId
+                UserPrincipalName = $null
+            }
+        }
+    }
+    catch {
+        $spErrorMsg = $_.Exception.Message
+        Write-Verbose "Service principal query failed for '$PrincipalId': $spErrorMsg"
+        
+        # Try to get as a user
+        try {
+            Write-Verbose "Attempting to resolve '$PrincipalId' as user..."
+            $user = Get-AzADUser -ObjectId $PrincipalId -ErrorAction Stop
+            if ($user) {
+                Write-Verbose "Successfully resolved user: $($user.DisplayName)"
+                $principalObject = [PSCustomObject]@{
+                    PrincipalId = $user.Id
+                    DisplayName = $user.DisplayName
+                    PrincipalType = "User"
+                    AppId = $null
+                    UserPrincipalName = $user.UserPrincipalName
+                }
+            }
+        }
+        catch {
+            Write-Warning "Could not resolve principal ID '$PrincipalId' as user or service principal:"
+            Write-Warning "  Service Principal Error: $spErrorMsg"
+            Write-Warning "  User Error: $($_.Exception.Message)"
+            Write-Warning "This may indicate insufficient Azure AD permissions or authentication issues."
+        }
+    }
+
+    if ($null -eq $principalObject) {
+        # Cache the failure to avoid repeated lookups for invalid IDs
+        $principalObject = [PSCustomObject]@{
+            PrincipalId = $PrincipalId
+            DisplayName = "Unknown"
+            PrincipalType = "Unknown"
+            AppId = $null
+            UserPrincipalName = $null
+        }
+    }
+    
+    # Add to cache
+    $script:MigrationContext.PrincipalCache[$PrincipalId] = $principalObject
+    
+    return $principalObject
+}
+
+function Test-AzureADPermissions {
+    <#
+    .SYNOPSIS
+    Tests Azure AD permissions required for principal name resolution
+    
+    .DESCRIPTION
+    Verifies that the current user has sufficient permissions to query Azure AD
+    for service principals and users. This helps diagnose "Unknown" principal issues.
+    
+    .OUTPUTS
+    Boolean indicating whether Azure AD queries are working
+    #>
+    [CmdletBinding()]
+    param()
+    
+    $hasPermissions = $true
+    $failures = @()
+    
+    try {
+        $testUser = Get-AzADUser -First 1 -ErrorAction Stop
+    } catch {
+        $failures += "User query: $($_.Exception.Message)"
+        $hasPermissions = $false
+    }
+    
+    try {
+        $testSP = Get-AzADServicePrincipal -First 1 -ErrorAction Stop
+    } catch {
+        $failures += "Service Principal query: $($_.Exception.Message)"
+        $hasPermissions = $false
+    }
+    
+    try {
+        $context = Get-AzContext -ErrorAction Stop
+        if (-not $context) {
+            $failures += "No active Azure context"
+            $hasPermissions = $false
+        }
+    } catch {
+        $failures += "Azure authentication: $($_.Exception.Message)"
+        $hasPermissions = $false
+    }
+    
+    if (-not $hasPermissions) {
+        Write-Host "Azure AD permission check failed:" -ForegroundColor Red
+        foreach ($f in $failures) { Write-Host "  - $f" -ForegroundColor Yellow }
+        Write-Host "Ensure you have Directory.Read.All and are connected to the correct tenant." -ForegroundColor Yellow
+    }
+    
+    return $hasPermissions
+}
+
+function ConvertTo-Hashtable {
+    <#
+    .SYNOPSIS
+    Recursively converts a PSCustomObject to a Hashtable.
+    #>
+    param(
+        [Parameter(ValueFromPipeline)]
+        $InputObject
+    )
+    
+    if ($null -eq $InputObject) { return $null }
+    if ($InputObject -is [hashtable]) { return $InputObject }
+    
+    $hash = @{}
+    foreach ($property in $InputObject.PSObject.Properties) {
+        if ($property.Value -is [PSCustomObject]) {
+            $hash[$property.Name] = ConvertTo-Hashtable $property.Value
+        } elseif ($property.Value -is [System.Array]) {
+            $hash[$property.Name] = @()
+            foreach ($item in $property.Value) {
+                if ($item -is [PSCustomObject]) {
+                    $hash[$property.Name] += ConvertTo-Hashtable $item
+                } else {
+                    $hash[$property.Name] += $item
+                }
+            }
+        } else {
+            $hash[$property.Name] = $property.Value
+        }
+    }
+    return $hash
+}
+
+#endregion
+
+#region Initialization
+
+# Auto-initialize when module is imported
+if ($MyInvocation.InvocationName -ne ".") {
+    Initialize-AuditLogging
+}
+
+#endregion
 # SIG # Begin signature block
 # MIIo2gYJKoZIhvcNAQcCoIIoyzCCKMcCAQExDzANBglghkgBZQMEAgEFADB5Bgor
 # BgEEAYI3AgEEoGswaTA0BgorBgEEAYI3AgEeMCYCAwEAAAQQH8w7YFlLCE63JNLG
-# KX7zUQIBAAIBAAIBAAIBAAIBADAxMA0GCWCGSAFlAwQCAQUABCBDNDioAZvoUrw0
-# g7uDCTIYHPiAHqvLa/X7rUxt4a9BhKCCDcMwggatMIIElaADAgECAhMzAAAArn9k
+# KX7zUQIBAAIBAAIBAAIBAAIBADAxMA0GCWCGSAFlAwQCAQUABCCNUth4QjJnQvcm
+# Hlmox+hIVSczey8D8xjTLk3h6DvlyqCCDcMwggatMIIElaADAgECAhMzAAAArn9k
 # 1tYsMf4JAAAAAACuMA0GCSqGSIb3DQEBDAUAMGIxCzAJBgNVBAYTAlVTMR4wHAYD
 # VQQKExVNaWNyb3NvZnQgQ29ycG9yYXRpb24xMzAxBgNVBAMTKkF6dXJlIFJTQSBQ
 # dWJsaWMgU2VydmljZXMgQ29kZSBTaWduaW5nIFBDQTAeFw0yNTA2MTkxODU1NTha
@@ -202,64 +932,64 @@ Describe "Switch-KeyVaultAuthModeToRBAC.ps1" {
 # cnBvcmF0aW9uMTMwMQYDVQQDEypBenVyZSBSU0EgUHVibGljIFNlcnZpY2VzIENv
 # ZGUgU2lnbmluZyBQQ0ECEzMAAACuf2TW1iwx/gkAAAAAAK4wDQYJYIZIAWUDBAIB
 # BQCgga4wGQYJKoZIhvcNAQkDMQwGCisGAQQBgjcCAQQwHAYKKwYBBAGCNwIBCzEO
-# MAwGCisGAQQBgjcCARUwLwYJKoZIhvcNAQkEMSIEIHNu0dorAjLzrXCpRAc4ZM4D
-# X9/Q1/CVztWQIul2VYrEMEIGCisGAQQBgjcCAQwxNDAyoBSAEgBNAGkAYwByAG8A
+# MAwGCisGAQQBgjcCARUwLwYJKoZIhvcNAQkEMSIEIMOBRUcic0WtHogCkmswy/7L
+# JQZFmzKVWTtiUY1Ny3IBMEIGCisGAQQBgjcCAQwxNDAyoBSAEgBNAGkAYwByAG8A
 # cwBvAGYAdKEagBhodHRwOi8vd3d3Lm1pY3Jvc29mdC5jb20wDQYJKoZIhvcNAQEB
-# BQAEggGAhGz8xNrarjKrX3iqq6tFfrEEL4IbekYwfr5tegl1xMm/YBMhPLa21TyF
-# 1c3sDVjV7C///aFvpQlxupa0fNzSgdCwk/HZhdhHvGsVhzRhHpecDg6RIWN3gijt
-# PmAN9p1Gfl4Gr+LCg+FD2sqWeVFd1JgAeBvkyvcm8TigilR5SAWIlfhR0eDcz2Pg
-# NUTTVknzwKVGsU+Kp4J+n6PL5q4tO81+ZHpTftdFS1FLm6lUAEQsmfAk7d4lXrDI
-# gfcCZqAu1uc3+8YtyxInQP7iW9iqqgWBHwCA+nLoFces8q1EcQF3/t6ruRsqukSs
-# wBhMCnL2TtuZxjnOjffPuAPbwnn/AUi5tY62YGrX9DH6gHTEmy7htgXZ7yXAKzkl
-# ONPp/dxEplNotjks1aUIFbmSj8Gu1iCFdMMjoSeKDlfjVsAOOlEeDlKFoW4YUWiy
-# 31QSide/tQC7nNaBQnBbAYmImX3hAB2ufrvYzRKaVMA8J0PM5e0U1N+yOxETr7Qd
-# 5wXNydZhoYIXlDCCF5AGCisGAQQBgjcDAwExgheAMIIXfAYJKoZIhvcNAQcCoIIX
+# BQAEggGAZWIULAgkMQWCEvlCJuC3aUAIlTtduags7yZqrmt49SHUvqaV0spXwc9M
+# W90fUG9WFE6/gWl46rpQqXPHG1Zy00vOx+o0yMv6CZsMabtuFUWhoJKHszB4V7a4
+# VwUx/tMtKD6HRw+JjBmNDg9iAAY+rcfJ01t66dWdFnKHBTSE27StZtwkPSxLF8ZF
+# GEDZsHZs2MER+MFK2vmcdr48wLB/zDJid92JmxHsxBLn9qGyXzYgdLoPuPXfqGz2
+# WQI81o3lyMOzhaNweb8v20PBwPn736/q0NkYJcO41J3f20uVuHElJ0qkbtZpDC5+
+# 8Eb5bcQxk5KeY3DXtn/NX3rpahwSuGTNbbfVwtimeq473kKMQPqNt0HqBOzP+rmM
+# oTVtLq7SlLlSXn+gw0gZ8Uqyibj0AkXx2ek7eeHfSRfn9MnQOQKTKXQGtVOstr26
+# oJ8UyVvWl/kLAQ3ej1AZA1BzYo2h5Zlt0DFBW7lVh2HgGTBhAs0LKFEzCwWthJ0W
+# hRN3NkdsoYIXlDCCF5AGCisGAQQBgjcDAwExgheAMIIXfAYJKoZIhvcNAQcCoIIX
 # bTCCF2kCAQMxDzANBglghkgBZQMEAgEFADCCAVIGCyqGSIb3DQEJEAEEoIIBQQSC
-# AT0wggE5AgEBBgorBgEEAYRZCgMBMDEwDQYJYIZIAWUDBAIBBQAEIBvYdIaqGIAh
-# Jl8j4F/PeODozTeLz3wAH3xzai7nLo+xAgZplMyDTAwYEzIwMjYwMzA1MTg0MjU5
-# LjkwM1owBIACAfSggdGkgc4wgcsxCzAJBgNVBAYTAlVTMRMwEQYDVQQIEwpXYXNo
+# AT0wggE5AgEBBgorBgEEAYRZCgMBMDEwDQYJYIZIAWUDBAIBBQAEIF3I9Hia0Dbt
+# fB5zrZAc7bt54qJ5AIk7cl1IHkVLiZBbAgZplO9jD0AYEzIwMjYwMzA1MTg0MjU4
+# LjMwNVowBIACAfSggdGkgc4wgcsxCzAJBgNVBAYTAlVTMRMwEQYDVQQIEwpXYXNo
 # aW5ndG9uMRAwDgYDVQQHEwdSZWRtb25kMR4wHAYDVQQKExVNaWNyb3NvZnQgQ29y
 # cG9yYXRpb24xJTAjBgNVBAsTHE1pY3Jvc29mdCBBbWVyaWNhIE9wZXJhdGlvbnMx
-# JzAlBgNVBAsTHm5TaGllbGQgVFNTIEVTTjo4OTAwLTA1RTAtRDk0NzElMCMGA1UE
+# JzAlBgNVBAsTHm5TaGllbGQgVFNTIEVTTjo5NjAwLTA1RTAtRDk0NzElMCMGA1UE
 # AxMcTWljcm9zb2Z0IFRpbWUtU3RhbXAgU2VydmljZaCCEeowggcgMIIFCKADAgEC
-# AhMzAAACDizLKH2VIHVjAAEAAAIOMA0GCSqGSIb3DQEBCwUAMHwxCzAJBgNVBAYT
+# AhMzAAACBNjgDgeXMliYAAEAAAIEMA0GCSqGSIb3DQEBCwUAMHwxCzAJBgNVBAYT
 # AlVTMRMwEQYDVQQIEwpXYXNoaW5ndG9uMRAwDgYDVQQHEwdSZWRtb25kMR4wHAYD
 # VQQKExVNaWNyb3NvZnQgQ29ycG9yYXRpb24xJjAkBgNVBAMTHU1pY3Jvc29mdCBU
-# aW1lLVN0YW1wIFBDQSAyMDEwMB4XDTI1MDEzMDE5NDMwM1oXDTI2MDQyMjE5NDMw
-# M1owgcsxCzAJBgNVBAYTAlVTMRMwEQYDVQQIEwpXYXNoaW5ndG9uMRAwDgYDVQQH
+# aW1lLVN0YW1wIFBDQSAyMDEwMB4XDTI1MDEzMDE5NDI0N1oXDTI2MDQyMjE5NDI0
+# N1owgcsxCzAJBgNVBAYTAlVTMRMwEQYDVQQIEwpXYXNoaW5ndG9uMRAwDgYDVQQH
 # EwdSZWRtb25kMR4wHAYDVQQKExVNaWNyb3NvZnQgQ29ycG9yYXRpb24xJTAjBgNV
 # BAsTHE1pY3Jvc29mdCBBbWVyaWNhIE9wZXJhdGlvbnMxJzAlBgNVBAsTHm5TaGll
-# bGQgVFNTIEVTTjo4OTAwLTA1RTAtRDk0NzElMCMGA1UEAxMcTWljcm9zb2Z0IFRp
+# bGQgVFNTIEVTTjo5NjAwLTA1RTAtRDk0NzElMCMGA1UEAxMcTWljcm9zb2Z0IFRp
 # bWUtU3RhbXAgU2VydmljZTCCAiIwDQYJKoZIhvcNAQEBBQADggIPADCCAgoCggIB
-# AKzm3uJG1e3SFt6j0wTvxliMijexpC5YwEVDtfiz2+ihhEAFM5/amhMdq3H4TCcF
-# QYHVXa38TozCxA2Zjlekz/vloKtl3ECetX2jhO7mwF6ltt96Gys5ZEEgagkTo+1a
-# h3UKsV6GbV2LPeNjcfyIWuHuep5+eJnVKdtxY8zI0jG4YXOlCIMD4TlhLfeZ4ypp
-# fCF1vTUKW7KaH/cQq+SePh0ilBkRY48zePFtFUBg3kna06tiQlx0PHSXTZX81h3W
-# qS9QGA/Gsq+KrmTPsToBs6J8INIwGByf9ftFDDrfRCTOqGnSQNTap6L9qj0gea65
-# F5cSOeOmBOyvgBvfcgIAoxjE5B76fnCoRVwT05PKGZZklLkCdZROeKiTiaDA40FZ
-# DUMs4YWRnBdPffgg8Kp3j/f8t38i2LOKy3JRliyaX8LhmF0Atu99jDO/fU7F/w1O
-# ZXkgbFZ0eeTYeGHhufNMqiwRoOsm9AyJD6WiiMzt/luB3IEGdhAGbn7+ImzHDyTb
-# bvMXaNs0j47Czwct5ka3y3q4nZ5WM0PUHRi2CwE/RywGWecj7j528thG3RwCrDo+
-# JhLPkVJlxumLTF0Af+N3d3PIYCtvIu6jr0e6B8YQRv+wzTutyg/Wjdxnx5Yxvj4w
-# gHx645vkNU8OcRwWLg0O6Rgz3WDUO3+oh6T6u0TzxVLxAgMBAAGjggFJMIIBRTAd
-# BgNVHQ4EFgQUhXFEaVIRkT7URIrpQYjtg1wQiNswHwYDVR0jBBgwFoAUn6cVXQBe
+# APDdJtx57Z3rq+RYZMheF8aqqBAbFBdOerjheVS83MVK3sQu07gH3f2PBkVfsOtG
+# 3/h+nMY2QV0alzsQvlLzqopi/frR5eNb58i/WUCoMPfV3+nwCL38BnPwz3nOjSsO
+# krZyzP1YDJH0W1QPHnZU6z2o/f+mCke+BS8Pyzr/co0hPOazxALW0ndMzDVxGf0J
+# mBUhjPDaIP9m85bSxsX8NF2AzxR23GMUgpNdNoj9smGxCB7dPBrIpDaPzlFp8UVU
+# JHn8KFqmSsFBYbA0Vo/OmZg3jqY+I69TGuIhIL2dD8asNdQlbMsOZyGuavZtoAEl
+# 6+/DfVRiVOUtljrNSaOSBpF+mjN34aWr1NjYTcOCWvo+1MQqA+7aEzq/w2JTmdO/
+# GEOfF2Zx/xQ3uCh5WUQtds6buPzLDXEz0jLJC5QxaSisFo3/mv2DiW9iQyiFFcRg
+# HS0xo4+3QWZmZAwsEWk1FWdcFNriFpe+fVp0qu9PPxWV+cfGQfquID+HYCWphaG/
+# RhQuwRwedoNaCoDb2vL6MfT3sykn8UcYfGT532QfYvlok+kBi42Yw08HsUNM9YDH
+# sCmOv8nkyFTHSLTuBXZusBn0n1EeL58w9tL5CbgCicLmI5OP50oK21VGz6Moq47r
+# cIvCqWWO+dQKa5Jq85fnghc60pwVmR8N05ntwTgOKg/VAgMBAAGjggFJMIIBRTAd
+# BgNVHQ4EFgQUGnV2S0Bwalb8qbqqb6+7gzUZol8wHwYDVR0jBBgwFoAUn6cVXQBe
 # Yl2D9OXSZacbUzUZ6XIwXwYDVR0fBFgwVjBUoFKgUIZOaHR0cDovL3d3dy5taWNy
 # b3NvZnQuY29tL3BraW9wcy9jcmwvTWljcm9zb2Z0JTIwVGltZS1TdGFtcCUyMFBD
 # QSUyMDIwMTAoMSkuY3JsMGwGCCsGAQUFBwEBBGAwXjBcBggrBgEFBQcwAoZQaHR0
 # cDovL3d3dy5taWNyb3NvZnQuY29tL3BraW9wcy9jZXJ0cy9NaWNyb3NvZnQlMjBU
 # aW1lLVN0YW1wJTIwUENBJTIwMjAxMCgxKS5jcnQwDAYDVR0TAQH/BAIwADAWBgNV
 # HSUBAf8EDDAKBggrBgEFBQcDCDAOBgNVHQ8BAf8EBAMCB4AwDQYJKoZIhvcNAQEL
-# BQADggIBAHXgvZMv4vw5cvGcZJqXaHfSZnsWwEWiiJiRRU5jTkX2mfA9NW58QMZY
-# Sk03LY59pQdYg6hD/3+uPA7SFLZKkHQHMwCTaDLP3Y0ZY6lZukF0y+utEOmJZmL+
-# 4tLhkZ1Gfc/YNxxiaWQ0/69pEBe+e/6anbsqAjv2Yn2EbIJBu+0wiORtiguoruwX
-# tZqGf2suNfXLlAkviW8TLdCYD0pEGPnpwS/+UC/MOrt5KKpGr+kLKrJzy7OZDxJ4
-# pbJa7oONQD2+LzhCyYuOo8YKcfhw/KD633lGlb7veyeF7DWIJX7Be7ZHEydaDsSw
-# Pl4uQkcuzNQg935cKUP4VO9XTcZ+sMN+T7jl+Uf94pFlzcxRm2eEsmM/C/cqgoNJ
-# xbiJXpJsJHJxg+SqhYGsd/tK8MDsasfZQ63PVZrWTbux1mCkbr9z0KoojwJfm+Bp
-# r4DuhgdvhkGPtLy7yyDHBYrseBYNEHI4fcKIm7gsnyHdOJGRECuYdGnSVs1/WIAq
-# 4vzzogoT3Xa/TKrnm3yMzGMFTu6guythUigqTOH6wCSCSkY6hkvXj52XFUz3UFq/
-# NriQ4NNSXDNv5KlexKpXHye4HqqFTLumqmDDDWrhI2EDEWcXGzGJOVqgvvkY3E9H
-# rTmUnZZd6G0SLv/5h8mq8f6+epymoKPJD2E1pXO44QdfgzK6pyPCMIIHcTCCBVmg
+# BQADggIBAF5y/qxHDYdMszJQLVYkn4VH4OAD0mS/SUawi3jLr0KY6PxHregVuFKZ
+# x2lqTGo1uvy/13JNvhEPI2q2iGKJdu2teZArlfvL9D74XTMyi1O1OlM+8bd6W3JX
+# 8u87Xmasug1DtbhUfnxou3TfS05HGzxWcBBAXkGZBAw65r4RCAfh/UXi4XquXcQL
+# XskFInTCMdJ5r+fRZiIc9HSqTP81EB/yVJRRXSBsgxrAYiOfv5ErIKv7yXXF02Qr
+# 8XRRi5feEbScT71ZzQvgD96eW5Q3s9r285XpWLcE4lJPRFj9rHuJnjmV4zySoLDs
+# EU9xMiRbPGmOvacK2KueTDs4FDoU2DAi4C9g1NTuvrRbjbVgU4vmlOwxlw0M46wD
+# TXG/vKYIXrOScwalEe7DRFvYEAkL2q5TsJdZsxsAkt1npcg0pquJKYJff8wt3Nxb
+# lc7JwrRCGhE1F/hapdGyEQFpjbKYm8c7jyhJJj+Sm5i8FLeWMAC4s3tGnyNZLu33
+# XqloZ4Tumuas/0UmyjLUsUqYWdb6+DjcA2EHK4ARer0JrLmjsrYfk0WdHnCP9ItE
+# rArWLJRf3bqLVMS+ISICH89XIlsAPiSiKmKDbyn/ocO6Jg5nTBSSb9rlbyisiOg5
+# 1TdewniLTwJ82nkjvcKy8HlA9gxwukX007/Uu+hADDdQ90vnkzkdMIIHcTCCBVmg
 # AwIBAgITMwAAABXF52ueAptJmQAAAAAAFTANBgkqhkiG9w0BAQsFADCBiDELMAkG
 # A1UEBhMCVVMxEzARBgNVBAgTCldhc2hpbmd0b24xEDAOBgNVBAcTB1JlZG1vbmQx
 # HjAcBgNVBAoTFU1pY3Jvc29mdCBDb3Jwb3JhdGlvbjEyMDAGA1UEAxMpTWljcm9z
@@ -303,40 +1033,40 @@ Describe "Switch-KeyVaultAuthModeToRBAC.ps1" {
 # MIHLMQswCQYDVQQGEwJVUzETMBEGA1UECBMKV2FzaGluZ3RvbjEQMA4GA1UEBxMH
 # UmVkbW9uZDEeMBwGA1UEChMVTWljcm9zb2Z0IENvcnBvcmF0aW9uMSUwIwYDVQQL
 # ExxNaWNyb3NvZnQgQW1lcmljYSBPcGVyYXRpb25zMScwJQYDVQQLEx5uU2hpZWxk
-# IFRTUyBFU046ODkwMC0wNUUwLUQ5NDcxJTAjBgNVBAMTHE1pY3Jvc29mdCBUaW1l
-# LVN0YW1wIFNlcnZpY2WiIwoBATAHBgUrDgMCGgMVAErodj9lYuc5wwRCyOQMCgH8
-# llYIoIGDMIGApH4wfDELMAkGA1UEBhMCVVMxEzARBgNVBAgTCldhc2hpbmd0b24x
+# IFRTUyBFU046OTYwMC0wNUUwLUQ5NDcxJTAjBgNVBAMTHE1pY3Jvc29mdCBUaW1l
+# LVN0YW1wIFNlcnZpY2WiIwoBATAHBgUrDgMCGgMVALo9gdHD371If7WnDLqrNUbe
+# T2VuoIGDMIGApH4wfDELMAkGA1UEBhMCVVMxEzARBgNVBAgTCldhc2hpbmd0b24x
 # EDAOBgNVBAcTB1JlZG1vbmQxHjAcBgNVBAoTFU1pY3Jvc29mdCBDb3Jwb3JhdGlv
 # bjEmMCQGA1UEAxMdTWljcm9zb2Z0IFRpbWUtU3RhbXAgUENBIDIwMTAwDQYJKoZI
-# hvcNAQELBQACBQDtU7ezMCIYDzIwMjYwMzA1MDgwNTA3WhgPMjAyNjAzMDYwODA1
-# MDdaMHQwOgYKKwYBBAGEWQoEATEsMCowCgIFAO1Tt7MCAQAwBwIBAAICCNUwBwIB
-# AAICEnAwCgIFAO1VCTMCAQAwNgYKKwYBBAGEWQoEAjEoMCYwDAYKKwYBBAGEWQoD
-# AqAKMAgCAQACAwehIKEKMAgCAQACAwGGoDANBgkqhkiG9w0BAQsFAAOCAQEA7Ze6
-# +C3pMbuSWJOjaEd6fmD4EQsDeWFyO0U0Zq1gIreOF7pSlJeXRpTwaMUThzPaxszy
-# gXOrOPB4Afujp9RABahU6isCoooN124zZO7UdOlZdgyvrgknOyq/5h+V/neJKtdx
-# +sZTHT78U21rdAAnE7pKH1WWznbrbwsgFh38/VSA4V6nQFFv5faVQH1Of8RMax8a
-# ClIb/OOWMvvslcSUl3YhsvUsZLSfEuqx0oTSzWuCim/dDY1w/y2FHQzmqmqo/pBW
-# d05p82ySWgP6OLnT3QWIhmaKWo6mXy4Esx/74jpTx/gSVv90HCEJsEyautmsUE9i
-# ytrDaPHm/bg/+kn9ZzGCBA0wggQJAgEBMIGTMHwxCzAJBgNVBAYTAlVTMRMwEQYD
+# hvcNAQELBQACBQDtU9qSMCIYDzIwMjYwMzA1MTAzMzU0WhgPMjAyNjAzMDYxMDMz
+# NTRaMHQwOgYKKwYBBAGEWQoEATEsMCowCgIFAO1T2pICAQAwBwIBAAICBoAwBwIB
+# AAICEpwwCgIFAO1VLBICAQAwNgYKKwYBBAGEWQoEAjEoMCYwDAYKKwYBBAGEWQoD
+# AqAKMAgCAQACAwehIKEKMAgCAQACAwGGoDANBgkqhkiG9w0BAQsFAAOCAQEAcZhb
+# SHuVKqxA0ouXgL2jInSr1HqAF1zmiNeHrp6f3qhhYXQ3hjuplvEk4ZWAp3dUdgya
+# AN2IQWsiN/vjZfngvaGoYxOE1LI0FVZpkXtpY1iB6QW49o/npQwwszNoq8f5TkgS
+# X5V/hfd3lOih8ZditaQnv3hv5TDQB4yH+ANCqDTk5Ucpnw1MSmwipdZqnkYiLUa9
+# YtDT9iZA74ZKD1lufLnoizybMbfDZ6ab+A94LsGy3HmNRNx1SwmgcMPZDtpjKWpg
+# aGDQ0iDFVF6LT5A6CwSLvvCYQrMAwU7QWkAuSOXgmz7QdR/3txIp/KapkkNzyL+e
+# GEE4koVXteU8+Ph+NzGCBA0wggQJAgEBMIGTMHwxCzAJBgNVBAYTAlVTMRMwEQYD
 # VQQIEwpXYXNoaW5ndG9uMRAwDgYDVQQHEwdSZWRtb25kMR4wHAYDVQQKExVNaWNy
 # b3NvZnQgQ29ycG9yYXRpb24xJjAkBgNVBAMTHU1pY3Jvc29mdCBUaW1lLVN0YW1w
-# IFBDQSAyMDEwAhMzAAACDizLKH2VIHVjAAEAAAIOMA0GCWCGSAFlAwQCAQUAoIIB
-# SjAaBgkqhkiG9w0BCQMxDQYLKoZIhvcNAQkQAQQwLwYJKoZIhvcNAQkEMSIEIB02
-# oQbWzyBhihxhxlGPSSZdykPL7STN+p0u+dx/9dGtMIH6BgsqhkiG9w0BCRACLzGB
-# 6jCB5zCB5DCBvQQgAXQdcyXw6YGQrbrubGhspKKHA50/R5Q1dAzKk/NPEoYwgZgw
+# IFBDQSAyMDEwAhMzAAACBNjgDgeXMliYAAEAAAIEMA0GCWCGSAFlAwQCAQUAoIIB
+# SjAaBgkqhkiG9w0BCQMxDQYLKoZIhvcNAQkQAQQwLwYJKoZIhvcNAQkEMSIEILzz
+# 9B4wySj9GeNvPzMOdreoECaH3gAqje5aotQitgVyMIH6BgsqhkiG9w0BCRACLzGB
+# 6jCB5zCB5DCBvQQg+e14Zf1bCrxV0kzqaN/HUYQmy7v/qRTqXRJLmtx5uf4wgZgw
 # gYCkfjB8MQswCQYDVQQGEwJVUzETMBEGA1UECBMKV2FzaGluZ3RvbjEQMA4GA1UE
 # BxMHUmVkbW9uZDEeMBwGA1UEChMVTWljcm9zb2Z0IENvcnBvcmF0aW9uMSYwJAYD
-# VQQDEx1NaWNyb3NvZnQgVGltZS1TdGFtcCBQQ0EgMjAxMAITMwAAAg4syyh9lSB1
-# YwABAAACDjAiBCDkERdKXmyiiXybz/86fcIwM+7CJ/IH8rEyg7pUwURYwzANBgkq
-# hkiG9w0BAQsFAASCAgBRJo4L50ivBEFP2WiFjMx0H+5s0d5p7/5pzNXSbizN8ur1
-# PpAFGYwoPEBAPx8XbBnoCScuugIYYK0CX00rdqFpj6/lWVX+Cl7DI0Dd1jTnLbZy
-# BnUawLiSM9ySSpE119p0j93+e1dxhE7wgvR93Tne5ZOTLWYNNp0GDzkrBKTvUVKp
-# uAO5GHDinweqObK9iaSW6xyqFPxfwB4pZoV1UIS73vDYc9zTWIGFk2rTvVzmpsqa
-# 582daU8/gLTPw2WF8BAUWDolr9fJYvfGh0ORyp9JOiSbBS37Fk61x3bQM2GdTzqk
-# 5/z1EkfuroAK/u+S0Hqmk2T1m+nE2Zwluiqd6NXvs/yoQSAFyGOOP59IcEpLxs6/
-# 5sQZzXWW4IjAjcqIaJ5f3Xou5j2p4a8WAkFqbqpKi2n3UcYyewUOduCS0uhqwB9A
-# oUQKnn0thPygzk1N99YIsmcI3xk3vuYEKttcy6z7qWlUA0g0e8/P/x3p2j3O0YmO
-# 0wxP40cMK1O/4MwysyFq3dnxVl1PI1EqT5P7reJzTKzrd2z2YzVQtituquCHcG3q
-# 6MeB9na5OepCESTW8cZyZiXX9uKpJ9/gr6/4GFNRWOa9RXBGKfYm8I8xS/TXJYt0
-# NksU5KBGxZ+ry3xuUYVq8u+Afx8evpQN3ZqetU/coC//yMOLBqNmGJDk+JjVew==
+# VQQDEx1NaWNyb3NvZnQgVGltZS1TdGFtcCBQQ0EgMjAxMAITMwAAAgTY4A4HlzJY
+# mAABAAACBDAiBCCHuRWClMsIgde9405KRA5CkyRV08ujYIE8vUstJFUz3DANBgkq
+# hkiG9w0BAQsFAASCAgCkXkMm60wkGCLcikkQ9kxeadDaRodQuTi5/4mJAho6i3+B
+# DMFhvWiIHfmM+kC5hDYI1tEbiIGI+SENw9M+DbHSvZkNySkl4vDp388Rku5Q/Xaz
+# g+mLJri1F0g8HjZn2AgRnFXoD/2lehUCj/EB1d4SLiykR97JD2jGhkCK6e/m0GIp
+# nRY1raDjrUWZA5QssrtYJwRsCeFjZP358kMZVfZHRY/4QkAcd+pogi/Y2XnTOT2B
+# wcbPknCJvujvoDqecmDksIk3n2S0V0ELwxgJUGDuYfQlAxMdoPUILeUDSl0za3Ky
+# YBqZeE09kj41y6E3wj2vUzt0FLA5fEmCgIiKKCubU9ZEGqSC785DK/Gun+FlVKYe
+# hmYCnw41Iok1jbfXXN96zTs+AIR7U0JqqZBwcPQdp+H4p11xJ6uY/uq0MipR4xkM
+# UQJTIgc9POy7BG4YNwuhMTFDbUCmJzHL/KAxZVSEOr/J5A61aCxi13oovU2oL/Gn
+# 67m2PIJ5J6ljUsrAveu9UCl/bN+kP3L2rd+jMlqlf3JzGptE0fxCaOIXQL5cC26d
+# RtqA6EIO54cchjeyHL8O0XoD5sCiprBzlrz0KiOmJdgu/hTZQO/o18i1pRbU6S9P
+# SC/3+XlVA2HTduNyne5it0pZuzjtUvX10D1bkpJv5/LDwUOM6OvZSxnzhU/pVw==
 # SIG # End signature block

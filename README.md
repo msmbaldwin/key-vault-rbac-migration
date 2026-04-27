@@ -1,4 +1,6 @@
-# Key Vault RBAC Migration Toolkit
+# KvRbacMigrator
+
+[![CI - Test Suite](https://github.com/microsoft/KvRbacMigrator/actions/workflows/ci.yml/badge.svg)](https://github.com/microsoft/KvRbacMigrator/actions/workflows/ci.yml)
 
 A PowerShell toolkit for migrating Azure Key Vaults from access policy authentication to Azure RBAC authorization, designed for enterprise-scale management of hundreds to thousands of Key Vaults.
 
@@ -263,16 +265,22 @@ The toolkit consists of three main scripts that work side-by-side:
 ### File Structure
 
 ```
-/key-vault-rbac-migration
+/KvRbacMigrator
  ├─ Invoke-KvRbacAnalysis.ps1    # Main analysis engine with optimized processing
  ├─ Invoke-KvRbacApply.ps1       # Role assignment application with safety controls
  ├─ Switch-KeyVaultAuthModeToRBAC.ps1  # Authentication mode switching
  ├─ Common.ps1                    # Consolidated logging, audit, metrics, and utilities
  ├─ RoleMapping.json              # Comprehensive role mapping configuration
- ├─ Run-Tests.ps1                 # Test runner with Pester integration
- ├─ *.Tests.ps1                   # Unit tests for each component
- ├─ README.md
- └─ LICENSE
+ ├─ README.md                     # Complete user documentation
+ ├─ tests/                        # Comprehensive test suite
+ │   ├─ Run-Tests.ps1            # Test runner with Pester integration
+ │   ├─ *.Tests.ps1              # Individual test files for each component
+ │   └─ README-Tests.md          # Test documentation
+ ├─ docs/                        # Technical documentation
+ │   ├─ QUICKSTART.md            # Quick start guide
+ │   └─ *.md                     # Additional documentation
+ └─ .github/workflows/           # CI/CD automation
+     └─ ci.yml                   # GitHub Actions workflow
 ```
 
 ### Performance Optimizations
@@ -349,10 +357,13 @@ Get-AzRoleDefinition -Name "Key Vault Secrets User"
 
 ## Testing
 
+### Quick Start
+
 Run the comprehensive test suite:
 
 ```powershell
 # Run all tests with the test runner
+cd tests
 .\Run-Tests.ps1
 ```
 
@@ -392,6 +403,8 @@ Administrator mode security controls verified
 Configuration integrity validated
 ```
 
+For detailed test documentation, see [tests/README-Tests.md](tests/README-Tests.md).
+
 ## Contributing
 
 1. Fork the repository
@@ -413,6 +426,22 @@ Configuration integrity validated
 
 This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
 
+## Changelog
+
+### Current Release
+- Transitive group membership resolution via Microsoft Graph API for detecting nested group-inherited role assignments
+- Automatic skipping of non-existent principals (deleted users/groups/service principals) during analysis
+- Certificates `set` permission mapping to Key Vault Certificates Officer
+- Storage permissions mapping to Key Vault Administrator with escalation warnings
+- RBAC-enabled vaults filtered out during Azure Resource Graph discovery
+- Improved bulk principal resolution and optimized assignment summary
+- Complete analysis and migration workflow with optimized performance
+- ARM, Bicep, and deployment script generation with revert capabilities
+- Comprehensive test suite with automated CI/CD validation
+- Enhanced security controls with zero privilege escalation
+- Bulk operations and caching for enterprise-scale deployments
+- Permission analysis mode for quick role validation
+
 ---
 
-> **Important:** Always test in non-production environments first. Switching to RBAC disables access policy authorization immediately — ensure proper RBAC roles are assigned before switching authentication modes.
+**Important:** Always test in non-production environments first. Switching to RBAC disables access policy authorization immediately - ensure proper RBAC roles are assigned before switching authentication modes.
