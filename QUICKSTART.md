@@ -57,14 +57,14 @@ Apply the generated RBAC role assignments from the analysis file.
 
 ### Step 3: Switch Authentication Mode
 
-After verifying the new RBAC roles, switch the Key Vault's authentication mode.
+After verifying the new RBAC roles, switch each Key Vault's authentication mode using the Azure CLI or Az PowerShell.
 
 ```powershell
-# Dry run to see which vaults will be switched
-.\Switch-KeyVaultAuthModeToRBAC.ps1 -ResourceGroup "my-keyvaults-rg"
+# Azure CLI
+az keyvault update --name "kv-prod-01" --enable-rbac-authorization true
 
-# Switch specific vaults
-.\Switch-KeyVaultAuthModeToRBAC.ps1 -VaultName "kv-prod-01" -Apply
+# Az PowerShell
+Update-AzKeyVault -VaultName "kv-prod-01" -ResourceGroupName "my-keyvaults-rg" -EnableRbacAuthorization $true
 ```
 
 **⚠️ Important:** Always test in non-production environments first. Switching to RBAC disables access policy authorization immediately.
