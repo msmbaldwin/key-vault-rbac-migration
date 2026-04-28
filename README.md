@@ -120,15 +120,14 @@ If you use the `-GenerateAutomationScripts` flag, it creates vault-specific fold
 
 ### 5. Switch Authentication Mode
 
+After verifying the new RBAC roles work, switch each Key Vault's authentication mode using the Azure CLI or Az PowerShell.
+
 ```powershell
-# Dry run - shows which vaults would be switched
-.\Switch-KeyVaultAuthModeToRBAC.ps1 -ResourceGroup "my-keyvaults-rg"
+# Azure CLI
+az keyvault update --name "kv-prod-01" --enable-rbac-authorization true
 
-# Switch with confirmation
-.\Switch-KeyVaultAuthModeToRBAC.ps1 -VaultName "kv-prod-01" -Apply
-
-# Switch all without prompts (use with caution)
-.\Switch-KeyVaultAuthModeToRBAC.ps1 -ResourceGroup "my-keyvaults-rg" -Apply -YesToAll
+# Az PowerShell
+Update-AzKeyVault -VaultName "kv-prod-01" -ResourceGroupName "my-keyvaults-rg" -EnableRbacAuthorization $true
 ```
 
 ## Usage Examples
@@ -145,8 +144,8 @@ Import-Csv ".\out\analysis-20250703-143022\analysis.csv" | Out-GridView
 # 3. Apply role assignments
 .\Invoke-KvRbacApply.ps1 -InputJson ".\out\analysis-20250703-143022\analysis.json"
 
-# 4. Switch authentication mode after verifying access
-.\Switch-KeyVaultAuthModeToRBAC.ps1 -SubscriptionId "12345678-1234-1234-1234-123456789abc" -Apply
+# 4. Switch authentication mode after verifying access (per vault)
+az keyvault update --name "kv-prod-01" --enable-rbac-authorization true
 ```
 
 ### CI/CD Integration
@@ -258,8 +257,8 @@ The toolkit consists of three main scripts that work side-by-side:
 # Application Phase
 .\Invoke-KvRbacApply.ps1 -InputJson .\out\analysis-YYYYMMDD-HHmmss\analysis.json [-WhatIf]
 
-# Auth Mode Migration Phase
-.\Switch-KeyVaultAuthModeToRBAC.ps1 -VaultName 'kv1','kv2' -Apply [-YesToAll]
+# Auth Mode Migration Phase (per vault, using Azure CLI or Az PowerShell)
+az keyvault update --name 'kv1' --enable-rbac-authorization true
 ```
 
 ### File Structure
@@ -268,19 +267,10 @@ The toolkit consists of three main scripts that work side-by-side:
 /KvRbacMigrator
  ├─ Invoke-KvRbacAnalysis.ps1    # Main analysis engine with optimized processing
  ├─ Invoke-KvRbacApply.ps1       # Role assignment application with safety controls
- ├─ Switch-KeyVaultAuthModeToRBAC.ps1  # Authentication mode switching
  ├─ Common.ps1                    # Consolidated logging, audit, metrics, and utilities
  ├─ RoleMapping.json              # Comprehensive role mapping configuration
  ├─ README.md                     # Complete user documentation
- ├─ tests/                        # Comprehensive test suite
- │   ├─ Run-Tests.ps1            # Test runner with Pester integration
- │   ├─ *.Tests.ps1              # Individual test files for each component
- │   └─ README-Tests.md          # Test documentation
- ├─ docs/                        # Technical documentation
- │   ├─ QUICKSTART.md            # Quick start guide
- │   └─ *.md                     # Additional documentation
- └─ .github/workflows/           # CI/CD automation
-     └─ ci.yml                   # GitHub Actions workflow
+ └─ QUICKSTART.md                 # Quick start guide
 ```
 
 ### Performance Optimizations
