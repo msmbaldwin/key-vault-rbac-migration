@@ -44,11 +44,6 @@
             "id": "e147488a-f6f5-4113-8e2d-b22465e65bf6",
             "name": "Key Vault Crypto Service Encryption User",
             "weight": 25
-        },
-        "Azure Service Deploy Release Management Key Vault Secrets User": {
-            "id": "260691e6-68c2-47cf-bd4a-97d5fd4dbcd5",
-            "name": "Azure Service Deploy Release Management Key Vault Secrets User",
-            "weight": 25
         }
     },
     "administratorModeMapping": {
