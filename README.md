@@ -69,6 +69,13 @@ KvRbacMigrator provides a comprehensive solution for:
   - Key Vault Reader (for analysis)
   - User Access Administrator (for role assignments)
 
+## Important Notes
+
+- The tool analyzes and suggests Key Vault-level role assignments. It does not account for effective permissions inherited from subscription-level role assignments, so duplicate role suggestions can occur. If a principal already receives required access through subscription-level roles, skip creating the suggested vault-level duplicate assignments.
+- The tool runs at subscription scope (or narrower scopes such as resource group or vault) and does not support tenant-scope execution.
+- The least-privilege mappings are recommendations, not guarantees. Review all suggested role assignments before applying them to avoid over-permissioning or under-permissioning.
+- Use the audit functionality throughout planning and rollout to validate decisions and support a smooth migration.
+
 ## Quick Start
 
 ### 1. Install Prerequisites
