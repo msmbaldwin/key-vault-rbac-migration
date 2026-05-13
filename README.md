@@ -9,6 +9,10 @@ KvRbacMigrator provides a comprehensive solution for:
 - **Generating** deployment artifacts (ARM, Bicep, CLI commands)
 - **Applying** RBAC role assignments with safety controls
 
+## Documentation
+
+For the Microsoft Learn how-to that places this toolkit in the broader Azure Key Vault access-control migration workflow, see [Migrate Key Vaults to Azure RBAC at scale with KvRbacMigrator](https://learn.microsoft.com/azure/key-vault/general/rbac-migration-toolkit). For the end-to-end migration guidance — including Azure Policy governance and the manual single-vault workflow — see [Migrate to Azure RBAC from access policies](https://learn.microsoft.com/azure/key-vault/general/rbac-migration).
+
 ## Features
 
 **Discovery & Analysis**
@@ -73,6 +77,8 @@ KvRbacMigrator provides a comprehensive solution for:
 - Use the audit functionality throughout planning and rollout to validate decisions and support a smooth migration.
 
 ## Quick Start
+
+This Quick Start is the fastest path through the toolkit. For migration context — when to use it, how it fits with Azure Policy governance, and how to switch authentication mode safely — see the [Microsoft Learn how-to](https://learn.microsoft.com/azure/key-vault/general/rbac-migration-toolkit).
 
 ### 1. Install Prerequisites
 
@@ -386,3 +392,5 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 ---
 
 **Important:** Always test in non-production environments first. Switching to RBAC disables access policy authorization immediately - ensure proper RBAC roles are assigned before switching authentication modes.
+
+For end-to-end migration guidance, see [Migrate to Azure RBAC from access policies](https://learn.microsoft.com/azure/key-vault/general/rbac-migration) on Microsoft Learn.
