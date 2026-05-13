@@ -1,7 +1,5 @@
 # KvRbacMigrator
 
-[![CI - Test Suite](https://github.com/microsoft/KvRbacMigrator/actions/workflows/ci.yml/badge.svg)](https://github.com/microsoft/KvRbacMigrator/actions/workflows/ci.yml)
-
 A PowerShell toolkit for migrating Azure Key Vaults from access policy authentication to Azure RBAC authorization, designed for enterprise-scale management of hundreds to thousands of Key Vaults.
 
 ## Overview
@@ -10,7 +8,6 @@ KvRbacMigrator provides a comprehensive solution for:
 - **Analyzing** Key Vault access policies and mapping them to appropriate RBAC roles
 - **Generating** deployment artifacts (ARM, Bicep, CLI commands)
 - **Applying** RBAC role assignments with safety controls
-- **Switching** Key Vault authentication mode from access policies to RBAC
 
 ## Features
 
@@ -54,7 +51,6 @@ KvRbacMigrator provides a comprehensive solution for:
 - Per-vault confirmation prompts with batch override options
 - Idempotent operations that safely handle re-execution
 - Comprehensive error handling with detailed failure reporting
-- Extensive test suite with automated CI/CD validation
 - Zero privilege escalation security model
 
 ## Prerequisites
@@ -352,65 +348,14 @@ Test-AzResourceGroupDeployment -ResourceGroup "test-rg" -TemplateFile ".\out\arm
 Get-AzRoleDefinition -Name "Key Vault Secrets User"
 ```
 
-## Testing
-
-### Quick Start
-
-Run the comprehensive test suite:
-
-```powershell
-# Run all tests with the test runner
-cd tests
-.\Run-Tests.ps1
-```
-
-### Test Coverage
-
-The test suite provides **comprehensive validation** of the core RoleMapping.json configuration:
-
-- **14 Critical Tests** validating role mappings and security controls
-- **Schema Validation**: Ensures all required sections and roles are defined
-- **Permission Mapping**: Validates all 36 Key Vault permissions are correctly mapped
-- **Security Logic**: Tests administrator mode and privilege escalation prevention
-- **Data Integrity**: Checks for consistency across all configuration sections
-
-### Test Categories
-
-```powershell
-# Run only RoleMapping validation tests
-Invoke-Pester -Path .\RoleMapping.Tests.ps1 -Tag "RoleMapping"
-
-# Run only critical security tests
-Invoke-Pester -Path .\RoleMapping.Tests.ps1 -Tag "Critical"
-
-# Run tests for a specific script
-Invoke-Pester -Path .\Invoke-KvRbacAnalysis.Tests.ps1
-```
-
-### Test Output Example
-
-```
-KvRbacMigrator Test Suite
-Tests Passed: 14, Failed: 0, Skipped: 0
-Duration: 00:00:01.56
-
-All Azure RBAC roles defined and valid
-All Key Vault permissions mapped correctly  
-Administrator mode security controls verified
-Configuration integrity validated
-```
-
-For detailed test documentation, see [tests/README-Tests.md](tests/README-Tests.md).
-
 ## Contributing
 
 1. Fork the repository
 2. Create a feature branch: `git checkout -b feature/my-feature`
-3. Make your changes and add tests
-4. Run the test suite: `cd tests && .\Run-Tests.ps1`
-5. Commit your changes: `git commit -am 'Add my feature'`
-6. Push to the branch: `git push origin feature/my-feature`
-7. Submit a pull request
+3. Make your changes
+4. Commit your changes: `git commit -am 'Add my feature'`
+5. Push to the branch: `git push origin feature/my-feature`
+6. Submit a pull request
 
 ## Security
 
@@ -434,7 +379,6 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 - Improved bulk principal resolution and optimized assignment summary
 - Complete analysis and migration workflow with optimized performance
 - ARM, Bicep, and deployment script generation with revert capabilities
-- Comprehensive test suite with automated CI/CD validation
 - Enhanced security controls with zero privilege escalation
 - Bulk operations and caching for enterprise-scale deployments
 - Permission analysis mode for quick role validation

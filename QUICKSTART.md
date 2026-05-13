@@ -1,6 +1,6 @@
 # KvRbacMigrator Quick Start
 
-This guide provides the essential steps to get started with the KvRbacMigrator toolkit. For detailed documentation, please see the [README.md](../README.md).
+This guide provides the essential steps to get started with the KvRbacMigrator toolkit. For detailed documentation, please see the [README.md](README.md).
 
 ## 1. Prerequisites
 
@@ -104,4 +104,4 @@ Recommended Roles:
 
 ## Next Steps
 
-For advanced usage, including large-scale migrations, CI/CD integration, and configuration, please refer to the full [README.md](../README.md).
+For advanced usage, including large-scale migrations, CI/CD integration, and configuration, please refer to the full [README.md](README.md).
